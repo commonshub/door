@@ -69,10 +69,10 @@ client.on("interactionCreate", async (interaction) => {
   const { commandName } = interaction;
 
   if (commandName === "open") {
+    await interaction.deferReply();
     openDoor();
-    await interaction.reply("Door opening!");
+    await interaction.editReply("Door opening!");
   }
-  // Add more commands handling here
 });
 
 // Add this event listener after your other client.on events
