@@ -185,10 +185,12 @@ app.get("/status", (req, res) => {
       const lastLog = status_log[ip][status_log[ip].length - 1];
       const lastTimestamp = lastLog.timestamp;
       const elapsed = new Date() - new Date(lastTimestamp);
-      if (elapsed > 3000) {
+      if (elapsed > 3500) {
         status[ip] = `Offline since ${lastTimestamp} (${Math.round(
           elapsed / 1000
         )}s ago)`;
+      } else {
+        status[ip] = `${lastLog.userAgent} online`;
       }
     }
   });
