@@ -177,6 +177,38 @@ app.get("/log", (req, res) => {
   return;
 });
 
+app.get("/", (req, res) => {
+  const lastOpening = doorlog.length > 0 && doorlog[doorlog.length - 1];
+  const styles = `
+    body {
+      font-family: sans-serif;
+      font-size: 1rem;
+      color: #333;
+      text-align: center;
+      margin-top: 2rem;
+    }
+    h1 {
+      font-size: 1.5rem;
+      color: #333;
+      text-align: center;
+    }
+  `;
+  const body = lastOpening
+    ? `
+        <h1>${lastOpening.user} opened the door at ${lastOpening.timestamp}</h1>
+      `
+    : `<h1>Door hasn't been opened yet</h1>`;
+  const html = `
+    <html>
+      <head>
+        <style>${styles}</style>
+      </head>
+      <body>${body}</body>
+    </html>
+  `;
+  res.status(200).header("content-type", "text/html").send(html);
+});
+
 app.get("/status", (req, res) => {
   const clients = Object.keys(status_log);
   const status = {};
@@ -185,8 +217,13 @@ app.get("/status", (req, res) => {
       status[ip] = "Online";
     } else {
       const lastLog = status_log[ip][status_log[ip].length - 1];
-      const lastTimestamp = lastLog.timestamp;
-      const elapsed = new Date() - new Date(lastTimestamp);
+      const lastTimestamp = new Date(lastLog.timestamp).toLocaleString(
+        "en-GB",
+        {
+          timeZone: "Europe/Brussels",
+        }
+      );
+      const elapsed = new Date() - new Date(lastLog.timestamp);
       if (elapsed > 3500) {
         status[ip] = `Offline since ${lastTimestamp} (${Math.round(
           elapsed / 1000
