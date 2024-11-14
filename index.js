@@ -1,9 +1,115 @@
+require("dotenv").config();
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} = require("discord.js");
+
+// Get bot token and allowed channel ID from the environment variables
+const token = process.env.DISCORD_BOT_TOKEN;
+const allowedChannelId = "1306678821751230514"; // Replace with your specific channel ID
+
+// Initialize the bot client
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+// Add this function to register the commands
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("open")
+      .setDescription("Opens the door")
+      .toJSON(),
+  ];
+
+  try {
+    console.log("Registering commands...");
+    console.log("Bot Client ID:", client.user.id); // Debug log
+
+    const rest = new REST({ version: "10" }).setToken(token);
+    console.log("Started refreshing application (/) commands.");
+
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commands,
+    });
+
+    console.log("Successfully reloaded application (/) commands.");
+  } catch (error) {
+    console.error("Error registering commands:", error);
+  }
+}
+
+// When the bot is ready
+client.once("ready", async () => {
+  console.log(`${client.user.tag} is now online!`);
+  // Wait a moment before registering commands
+  await registerCommands();
+});
+
+// Handle interactions (like slash commands)
+client.on("interactionCreate", async (interaction) => {
+  // Check if the interaction is a command and if it comes from the allowed channel
+  if (!interaction.isCommand()) return;
+
+  // Only respond if the interaction is in the allowed channel
+  if (interaction.channelId !== allowedChannelId) {
+    return interaction.reply({
+      content: "This bot can only be used in a specific channel!",
+      ephemeral: true,
+    });
+  }
+
+  const { commandName } = interaction;
+
+  if (commandName === "open") {
+    openDoor();
+    await interaction.reply("Door opening!");
+  }
+  // Add more commands handling here
+});
+
+// Add this event listener after your other client.on events
+client.on("messageCreate", async (message) => {
+  // Ignore messages from bots
+  if (message.author.bot) return;
+
+  // Check if message is in the allowed channel
+  if (message.channelId !== allowedChannelId) return;
+
+  // Now you can handle the message
+  console.log(`Received message: ${message.content}`);
+
+  // Example: respond to specific messages
+  if (message.content.toLowerCase() === "open") {
+    openDoor();
+    message.reply("Door opening!");
+  }
+});
+
+// Log in to Discord
+client.login(token);
 const express = require("express");
 const app = express();
 
 let isDoorOpen = false;
 const SECRET = process.env.SECRET || "";
 const log = {};
+
+function openDoor() {
+  isDoorOpen = true;
+
+  // Set a timer to reset `isDoorOpen` after 3 seconds
+  setTimeout(() => {
+    isDoorOpen = false;
+  }, 3000);
+}
 
 setInterval(() => {
   Object.keys(log).forEach((ip) => {
@@ -16,13 +122,8 @@ app.get("/open", (req, res) => {
   const { secret } = req.query;
 
   if (secret === SECRET) {
-    isDoorOpen = true;
+    openDoor();
     res.send("Door is now open for 3 seconds");
-
-    // Set a timer to reset `isDoorOpen` after 3 seconds
-    setTimeout(() => {
-      isDoorOpen = false;
-    }, 3000);
   } else {
     res.status(403).send("Forbidden: Invalid secret");
   }
