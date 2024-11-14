@@ -28,9 +28,13 @@ app.get("/open", (req, res) => {
 
 // Route to check if the door is open
 app.get("/check", (req, res) => {
+  // console.log(JSON.stringify(req.connection, null, 2));
+  // console.log(req);
+  const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
   log.push({
     timestamp: new Date().toISOString(),
-    ip: req.ip,
+    ip,
+    userAgent: req.headers["user-agent"],
     isDoorOpen,
   });
   if (isDoorOpen) {
