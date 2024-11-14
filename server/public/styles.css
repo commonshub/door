@@ -1,0 +1,99 @@
+body {
+  font-family: sans-serif;
+  font-size: 1rem;
+  color: #333;
+  text-align: center;
+  margin-top: 2rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  color: #333;
+  margin-bottom: 2rem;
+}
+h2 {
+  font-size: 1.2rem;
+  color: #333;
+  margin-top: 2rem;
+}
+
+.logo {
+  width: 100%;
+  margin-bottom: 2rem;
+  max-width: 100px;
+  margin: 0 auto;
+}
+
+.log-entry {
+  display: flex;
+  align-items: center;
+  max-width: 600px;
+  margin: 1rem auto;
+  padding: 1rem;
+  background: #f5f5f5;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  margin-right: 1rem;
+}
+
+.log-content {
+  flex: 1;
+}
+
+.username {
+  font-weight: bold;
+  margin-bottom: 0.25rem;
+}
+
+.timestamp {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.agent {
+  color: #999;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.today-visitors {
+  margin-bottom: 3rem;
+  padding: 1rem;
+}
+
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 1rem;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.today-user {
+  text-align: center;
+}
+
+.today-avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  margin-bottom: 0.5rem;
+  border: 2px solid #eee;
+  transition: transform 0.2s;
+}
+
+.today-avatar:hover {
+  transform: scale(1.1);
+}
+
+.today-name {
+  font-size: 0.8rem;
+  color: #666;
+  overflow
+} 

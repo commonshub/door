@@ -2,6 +2,7 @@ import network
 import time
 import credentials
 import door_control
+import machine
 
 class WiFiManager:
     def __init__(self, ssid=credentials.WIFI_SSID, password=credentials.WIFI_PASSWORD):
@@ -16,28 +17,19 @@ class WiFiManager:
         self.status_callback = None
 
     def connect(self):
-        """Attempt to connect to WiFi with exponential backoff"""
-        # Signal WiFi connection attempt with blue LED
-        door_control.set_wifi_status_led(False)
+        """Initial connection attempt"""
+        print(f'[WiFi] Connecting to {self.ssid}...')
+        self.wlan.connect(self.ssid, self.password)
         
-        if not self.wlan.isconnected():
-            print(f'[WiFi] Connecting to {self.ssid}...')
-            self.wlan.connect(self.ssid, self.password)
+        start_time = time.time()
+        while not self.wlan.isconnected():
+            if time.time() - start_time > 10:  # 10 second timeout
+                return False
+            print('.', end='')
+            time.sleep(1)
             
-            # Wait for connection with progressive timeout
-            for attempt in range(50):  # 5 second initial timeout
-                if self.wlan.isconnected():
-                    self._on_connect()
-                    return True
-                
-                # Check signal strength and adjust strategy
-                rssi = self.get_rssi()
-                print(f'[WiFi] Connection attempt {attempt+1}, Signal: {rssi} dBm')
-                
-                time.sleep(0.1)
-            
-            # Connection failed
-            return self._handle_connection_failure()
+        print('\n[WiFi] Connected!')
+        print(f'[WiFi] Network config: {self.wlan.ifconfig()}')
         return True
 
     def get_rssi(self):
@@ -93,22 +85,43 @@ class WiFiManager:
 
     def check_connection(self):
         """Advanced connection checking with diagnostics"""
-        if not self.wlan.isconnected():
-            print('[WiFi] Connection lost. Detailed diagnostics:')
-            print(f'[WiFi] SSID: {self.ssid}')
-            print(f'[WiFi] Current Status: {self.wlan.status()}')
-            print(f'[WiFi] Signal Strength: {self.get_rssi()} dBm')
+        try:
+            if not self.wlan.isconnected():
+                print('[WiFi] Connection lost. Detailed diagnostics:')
+                print(f'[WiFi] SSID: {self.ssid}')
+                print(f'[WiFi] Current Status: {self.wlan.status()}')
+                print(f'[WiFi] Signal Strength: {self.get_rssi()} dBm')
+                
+                # Reset the WiFi interface completely
+                self.wlan.active(False)
+                time.sleep(1)
+                self.wlan.active(True)
+                time.sleep(1)
+                
+                print('[WiFi] Attempting to reconnect...')
+                self.wlan.connect(self.ssid, self.password)
+                
+                # Use the same connection logic as initial boot
+                start_time = time.time()
+                while not self.wlan.isconnected():
+                    if time.time() - start_time > 10:  # 10 second timeout
+                        print('[WiFi] Reconnection timeout')
+                        return False
+                    print('.', end='')
+                    time.sleep(1)
+                
+                if self.wlan.isconnected():
+                    print('\n[WiFi] Successfully reconnected!')
+                    door_control.set_wifi_status_led(True)
+                    return True
+                
+                print('\n[WiFi] Reconnection failed')
+                return False
+                
+        except Exception as e:
+            print(f'[WiFi] Error during connection check: {e}')
+            return False
             
-            # Pulse blue LED during connection loss
-            door_control.set_wifi_status_led(False)
-            
-            return self.connect()
-        
-        # Periodic signal strength logging
-        rssi = self.get_rssi()
-        if rssi < -80:
-            print(f'[WiFi] Warning: Low signal strength {rssi} dBm')
-        
         return True
 
     def set_status_callback(self, callback):

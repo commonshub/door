@@ -5,6 +5,13 @@ import machine
 import door_control
 import wifi_manager
 import url_client
+from time import sleep
+
+# Initialize watchdog with 30 second timeout
+watchdog = machine.WDT(timeout=30000)  # 30 seconds
+
+MAX_WIFI_RETRIES = 5
+wifi_retry_count = 0
 
 class SystemManager:
     def __init__(self, reboot_interval=24 * 60 * 60):  # Default 24 hours
@@ -73,6 +80,9 @@ def run():
         
         while True:
             try:
+                # Feed the watchdog to prevent reset
+                watchdog.feed()
+                
                 # Check door timeout more frequently
                 door_control.check_door_timeout()
                 

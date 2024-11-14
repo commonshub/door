@@ -70,5 +70,25 @@ class URLClient:
                 print(f'[URLClient] Background check error: {e}')
                 time.sleep(self.check_interval)
 
+    def check_server(self):
+        try:
+            print(f'[URLClient] Checking server status: {self.check_url}')
+            response = urequests.get(self.check_url, timeout=5)
+            response.close()
+            return True
+        except OSError as e:
+            if e.errno == -116:  # ETIMEDOUT
+                print('[URLClient] Server check timed out - server might be slow or unreachable')
+            elif e.errno == 113:  # ECONNABORTED
+                print('[URLClient] Connection aborted - check your network connection')
+            elif e.errno == 118:  # EHOSTUNREACH
+                print('[URLClient] Host unreachable - check your network connection')
+            else:
+                print(f'[URLClient] Server check error: {e}')
+            return False
+        except Exception as e:
+            print(f'[URLClient] Unexpected error during server check: {e}')
+            return False
+
 # Create a global URLClient instance
 url_client = URLClient()

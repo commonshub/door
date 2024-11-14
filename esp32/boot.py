@@ -13,7 +13,7 @@ def connect_wifi():
         attempt = 1
         while not wlan.isconnected():
             print('[BOOT] Connection attempt {}...'.format(attempt))
-            time.sleep(1)
+            time.sleep(5)
             attempt += 1
     print('[BOOT] WiFi Connected! Network config:', wlan.ifconfig())
     return wlan

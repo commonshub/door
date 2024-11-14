@@ -23,7 +23,7 @@ pip install adafruit-ampy
 Flash the ESP32:
 
 ```
-python3 esp32/flash.py /dev/tty.usdmodem101
+python3 esp32/flash.py /dev/tty.usbmodem101
 ```
 
 Replace `/dev/tty.usdmodem101` by the right port for your machine (`ls /dev/tty.*`).
@@ -31,7 +31,7 @@ Replace `/dev/tty.usdmodem101` by the right port for your machine (`ls /dev/tty.
 Then upload the scripts:
 
 ```
-python esp32/install.py /dev/tty.usdmodem101
+python esp32/install.py /dev/tty.usbmodem101
 ```
 
 ### Run the server and discord bot

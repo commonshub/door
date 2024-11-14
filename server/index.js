@@ -6,10 +6,13 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require("discord.js");
+const express = require("express");
+const path = require("path");
 
 // Get bot token and allowed channel ID from the environment variables
 const token = process.env.DISCORD_BOT_TOKEN;
 const allowedChannelId = process.env.DISCORD_CHANNEL_ID;
+const users = {};
 
 // Initialize the bot client
 const client = new Client({
@@ -71,7 +74,8 @@ client.on("interactionCreate", async (interaction) => {
 
     if (commandName === "open") {
       await interaction.reply("Door opening!");
-      openDoor(interaction.user.displayName, client.user.tag);
+      addUser(interaction.user);
+      openDoor(interaction.user.id, client.user.tag);
     }
   } catch (error) {
     console.error("Error handling interaction:", error);
@@ -100,14 +104,15 @@ client.on("messageCreate", async (message) => {
 
   // Example: respond to specific messages
   if (message.content.toLowerCase() === "open") {
-    openDoor(message.author.displayName, client.user.tag);
+    // console.log(JSON.stringify(message.author, null, 2));
+    addUser(message.author);
+    openDoor(message.author.id, client.user.tag);
     message.reply("Door opening!");
   }
 });
 
 // Log in to Discord
 client.login(token);
-const express = require("express");
 const app = express();
 
 let isDoorOpen = false;
@@ -115,14 +120,25 @@ const SECRET = process.env.SECRET || "";
 const status_log = {};
 const doorlog = [];
 
-function openDoor(user, agent) {
-  console.log("Opening door for user", user, "with agent", agent);
+function addUser(user) {
+  users[user.id] = {
+    displayName: user?.globalName || user?.displayName || user?.tag,
+    username: user.username,
+    tag: user.tag,
+    avatar:
+      typeof user.avatarURL === "function" ? user.avatarURL() : user.avatarURL,
+  };
+}
+
+function openDoor(userid, agent) {
+  const user = users[userid];
+  console.log("Opening door for userid", userid, "with agent", agent);
   isDoorOpen = true;
   doorlog.push({
     timestamp: new Date().toLocaleString("en-GB", {
       timeZone: "Europe/Brussels",
     }),
-    user,
+    userid,
     agent,
   });
 
@@ -177,36 +193,105 @@ app.get("/log", (req, res) => {
   return;
 });
 
-app.get("/", (req, res) => {
-  const lastOpening = doorlog.length > 0 && doorlog[doorlog.length - 1];
-  const styles = `
-    body {
-      font-family: sans-serif;
-      font-size: 1rem;
-      color: #333;
-      text-align: center;
-      margin-top: 2rem;
+const getTodayUsers = () => {
+  const today = new Date().toLocaleDateString("en-GB", {
+    timeZone: "Europe/Brussels",
+  });
+  const todayUsers = new Set(); // Use Set to avoid duplicates
+
+  doorlog.forEach((log) => {
+    const logDate = log.timestamp.split(",")[0]; // Get date part only
+    if (logDate === today) {
+      todayUsers.add(log.userid);
     }
-    h1 {
-      font-size: 1.5rem;
-      color: #333;
-      text-align: center;
-    }
+  });
+
+  return Array.from(todayUsers);
+};
+
+const avatarGrid = () => {
+  const todayUsers = getTodayUsers();
+
+  if (todayUsers.length === 0) {
+    return "<p>No visitors today</p>";
+  }
+
+  const avatars = todayUsers
+    .map((userid) => {
+      const user = users[userid];
+      const defaultAvatar =
+        "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp";
+
+      return `
+      <div class="today-user">
+        <img class="today-avatar" src="${
+          user?.avatar || defaultAvatar
+        }" alt="Avatar">
+        <div class="today-name">${
+          user?.username || user?.tag || "Unknown"
+        }</div>
+      </div>
+    `;
+    })
+    .join("");
+
+  return `
+    <div class="today-visitors">
+      <h2>Today's Visitors</h2>
+      <div class="avatar-grid">
+        ${avatars}
+      </div>
+    </div>
   `;
-  const body = lastOpening
-    ? `
-        <h1>${lastOpening.user} opened the door at ${lastOpening.timestamp}</h1>
-      `
-    : `<h1>Door hasn't been opened yet</h1>`;
+};
+
+const logRow = (log) => {
+  const user = users[log.userid];
+  const defaultAvatar =
+    "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp";
+
+  return `
+    <div class="log-entry">
+      <img class="avatar" src="${user?.avatar || defaultAvatar}" alt="Avatar">
+      <div class="log-content">
+        <div class="username">${
+          user?.displayName || user?.tag || "Unknown User"
+        }</div>
+        <div class="timestamp">${log.timestamp}</div>
+      </div>
+    </div>
+  `;
+};
+function generateHtml(doorlog) {
+  const body = `
+  <img src="/commonshub-icon.svg" class="logo" />
+  ${avatarGrid()}
+  <h2>Door Access Log</h2>
+  ${
+    doorlog.length > 0
+      ? doorlog.slice(-10).reverse().map(logRow).join("\n")
+      : "<p>No door activity recorded yet</p>"
+  }
+`;
+
   const html = `
-    <html>
-      <head>
-        <style>${styles}</style>
-      </head>
-      <body>${body}</body>
-    </html>
-  `;
-  res.status(200).header("content-type", "text/html").send(html);
+  <html>
+    <head>
+      <link rel="stylesheet" href="/styles.css">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <body>${body}</body>
+  </html>
+`;
+
+  return html;
+}
+
+app.get("/", (req, res) => {
+  res
+    .status(200)
+    .header("content-type", "text/html")
+    .send(generateHtml(doorlog));
 });
 
 app.get("/status", (req, res) => {
@@ -238,6 +323,9 @@ app.get("/status", (req, res) => {
     .header("Content-Type", "application/json")
     .send(JSON.stringify(status, null, 2));
 });
+
+// Serve static files from a 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
 
 // Start the server (useful for local development)
 const PORT = process.env.PORT || 3000;
