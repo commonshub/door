@@ -58,20 +58,32 @@ client.on("interactionCreate", async (interaction) => {
   // Check if the interaction is a command and if it comes from the allowed channel
   if (!interaction.isCommand()) return;
 
-  // Only respond if the interaction is in the allowed channel
-  if (interaction.channelId !== allowedChannelId) {
-    return interaction.reply({
-      content: "This bot can only be used in a specific channel!",
-      ephemeral: true,
-    });
-  }
+  try {
+    // Only respond if the interaction is in the allowed channel
+    if (interaction.channelId !== allowedChannelId) {
+      return interaction.reply({
+        content: "This bot can only be used in a specific channel!",
+        ephemeral: true,
+      });
+    }
 
-  const { commandName } = interaction;
+    const { commandName } = interaction;
 
-  if (commandName === "open") {
-    await interaction.deferReply();
-    openDoor();
-    await interaction.editReply("Door opening!");
+    if (commandName === "open") {
+      await interaction.reply("Door opening!");
+      openDoor(interaction.user.id, client.user.id);
+    }
+  } catch (error) {
+    console.error("Error handling interaction:", error);
+    // Try to respond to the user if we haven't already
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction
+        .reply({
+          content: "There was an error processing your command!",
+          ephemeral: true,
+        })
+        .catch(console.error);
+    }
   }
 });
 
@@ -88,7 +100,7 @@ client.on("messageCreate", async (message) => {
 
   // Example: respond to specific messages
   if (message.content.toLowerCase() === "open") {
-    openDoor();
+    openDoor(message.author.id, client.user.id);
     message.reply("Door opening!");
   }
 });
@@ -100,29 +112,36 @@ const app = express();
 
 let isDoorOpen = false;
 const SECRET = process.env.SECRET || "";
-const log = {};
+const status_log = {};
+const doorlog = [];
 
-function openDoor() {
+function openDoor(user, agent) {
+  console.log("Opening door for user", user, "with agent", agent);
   isDoorOpen = true;
+  doorlog.push({
+    timestamp: new Date().toISOString(),
+    user,
+    agent,
+  });
 
   // Set a timer to reset `isDoorOpen` after 3 seconds
   setTimeout(() => {
     isDoorOpen = false;
+    console.log("Closing door");
   }, 3000);
 }
 
 setInterval(() => {
-  Object.keys(log).forEach((ip) => {
-    log[ip].length = 0;
-  });
+  status_log = {};
+  console.log("Resetting status log");
 }, 1000 * 60 * 60 * 24); // reset log every 24h
 
 // Route to open the door if the correct secret is provided
 app.get("/open", (req, res) => {
   const { secret } = req.query;
-
+  const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
   if (secret === SECRET) {
-    openDoor();
+    openDoor(ip, req.headers["user-agent"]);
     res.send("Door is now open for 3 seconds");
   } else {
     res.status(403).send("Forbidden: Invalid secret");
@@ -134,8 +153,8 @@ app.get("/check", (req, res) => {
   // console.log(JSON.stringify(req.connection, null, 2));
   // console.log(req);
   const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-  log[ip] = log[ip] || [];
-  log[ip].push({
+  status_log[ip] = status_log[ip] || [];
+  status_log[ip].push({
     timestamp: new Date().toISOString(),
     ip,
     userAgent: req.headers["user-agent"],
@@ -149,55 +168,34 @@ app.get("/check", (req, res) => {
 });
 
 app.get("/log", (req, res) => {
-  const ip = req.query.ip;
-  if (ip) {
-    res
-      .status(200)
-      .header("Content-Type", "application/json")
-      .send(JSON.stringify(log[ip], null, 2));
-  } else {
-    res
-      .status(200)
-      .header("Content-Type", "application/json")
-      .send(JSON.stringify(log, null, 2));
-  }
+  res
+    .status(200)
+    .header("Content-Type", "application/json")
+    .send(JSON.stringify(doorlog, null, 2));
   return;
 });
+
 app.get("/status", (req, res) => {
-  const ip = req.query.ip;
-
-  if (!ip) {
-    res
-      .status(200)
-      .header("Content-Type", "application/json")
-      .send(JSON.stringify(log, null, 2));
-    return;
-  }
-  if (!log[ip]) {
-    res.status(200).send("No log for that ip: " + ip);
-    return;
-  }
-
-  if (log[ip].length === 0) {
-    res.status(200).send("Online");
-    return;
-  }
-  const lastLog = log[ip][log[ip].length - 1];
-  const lastTimestamp = lastLog.timestamp;
-  const elapsed = new Date() - new Date(lastTimestamp);
-  if (elapsed > 3000) {
-    res
-      .status(403)
-      .send(
-        "Offline since " +
-          lastTimestamp +
-          " (" +
-          Math.round(elapsed / 1000) +
-          "s ago)"
-      );
-  } else {
-    res.status(200).send("Online");
-  }
+  const clients = Object.keys(status_log);
+  const status = {};
+  clients.forEach((ip) => {
+    if (status_log[ip].length === 0) {
+      status[ip] = "Online";
+    } else {
+      const lastLog = status_log[ip][status_log[ip].length - 1];
+      const lastTimestamp = lastLog.timestamp;
+      const elapsed = new Date() - new Date(lastTimestamp);
+      if (elapsed > 3000) {
+        status[ip] = `Offline since ${lastTimestamp} (${Math.round(
+          elapsed / 1000
+        )}s ago)`;
+      }
+    }
+  });
+  res
+    .status(200)
+    .header("Content-Type", "application/json")
+    .send(JSON.stringify(status, null, 2));
 });
 
 // Start the server (useful for local development)
