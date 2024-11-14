@@ -71,7 +71,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (commandName === "open") {
       await interaction.reply("Door opening!");
-      openDoor(interaction.user.id, client.user.id);
+      openDoor(interaction.user.displayName, client.user.tag);
     }
   } catch (error) {
     console.error("Error handling interaction:", error);
@@ -100,7 +100,7 @@ client.on("messageCreate", async (message) => {
 
   // Example: respond to specific messages
   if (message.content.toLowerCase() === "open") {
-    openDoor(message.author.id, client.user.id);
+    openDoor(message.author.displayName, client.user.tag);
     message.reply("Door opening!");
   }
 });
