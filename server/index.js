@@ -119,7 +119,7 @@ function openDoor(user, agent) {
   console.log("Opening door for user", user, "with agent", agent);
   isDoorOpen = true;
   doorlog.push({
-    timestamp: new Date().toLocaleString("en-US", {
+    timestamp: new Date().toLocaleString("en-GB", {
       timeZone: "Europe/Brussels",
     }),
     user,
