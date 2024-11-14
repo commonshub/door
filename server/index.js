@@ -119,7 +119,9 @@ function openDoor(user, agent) {
   console.log("Opening door for user", user, "with agent", agent);
   isDoorOpen = true;
   doorlog.push({
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toLocaleString("en-US", {
+      timeZone: "Europe/Brussels",
+    }),
     user,
     agent,
   });
@@ -161,9 +163,9 @@ app.get("/check", (req, res) => {
     isDoorOpen,
   });
   if (isDoorOpen) {
-    res.sendStatus(200);
+    res.status(200).send("open");
   } else {
-    res.sendStatus(403); // Forbidden if door is closed
+    res.status(403).send("closed"); // Forbidden if door is closed
   }
 });
 

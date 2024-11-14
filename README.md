@@ -55,6 +55,18 @@ curl http://localhost:3000/open?secret=YOURSECRET
 
 Or from the discord channel (make sure the bot has been installed and its role has been added to the permission of the channel), type `open` or use the `/open` command.
 
+To check the log of openings:
+
+```
+http://localhost:3000/log
+```
+
+You can also check the status of each device connected to the server via `/status`
+
+```
+http://localhost:3000/status
+```
+
 ## Contributors
 
 - Nicolas ([@nicolasdb](https://github.com/nicolasdb))
