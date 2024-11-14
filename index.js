@@ -3,10 +3,12 @@ const app = express();
 
 let isDoorOpen = false;
 const SECRET = process.env.SECRET || "";
-const log = [];
+const log = {};
 
 setInterval(() => {
-  log.length = 0;
+  Object.keys(log).forEach((ip) => {
+    log[ip].length = 0;
+  });
 }, 1000 * 60 * 60 * 24); // reset log every 24h
 
 // Route to open the door if the correct secret is provided
@@ -31,7 +33,8 @@ app.get("/check", (req, res) => {
   // console.log(JSON.stringify(req.connection, null, 2));
   // console.log(req);
   const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-  log.push({
+  log[ip] = log[ip] || [];
+  log[ip].push({
     timestamp: new Date().toISOString(),
     ip,
     userAgent: req.headers["user-agent"],
@@ -45,14 +48,40 @@ app.get("/check", (req, res) => {
 });
 
 app.get("/log", (req, res) => {
-  res.status(200).send(JSON.stringify(log, null, 2));
+  const ip = req.query.ip;
+  if (ip) {
+    res
+      .status(200)
+      .header("Content-Type", "application/json")
+      .send(JSON.stringify(log[ip], null, 2));
+  } else {
+    res
+      .status(200)
+      .header("Content-Type", "application/json")
+      .send(JSON.stringify(log, null, 2));
+  }
+  return;
 });
 app.get("/status", (req, res) => {
-  if (log.length === 0) {
+  const ip = req.query.ip;
+
+  if (!ip) {
+    res
+      .status(200)
+      .header("Content-Type", "application/json")
+      .send(JSON.stringify(log, null, 2));
+    return;
+  }
+  if (!log[ip]) {
+    res.status(200).send("No log for that ip: " + ip);
+    return;
+  }
+
+  if (log[ip].length === 0) {
     res.status(200).send("Online");
     return;
   }
-  const lastLog = log[log.length - 1];
+  const lastLog = log[ip][log[ip].length - 1];
   const lastTimestamp = lastLog.timestamp;
   const elapsed = new Date() - new Date(lastTimestamp);
   if (elapsed > 3000) {
