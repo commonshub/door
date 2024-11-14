@@ -1,2 +1,61 @@
-# door
-Open the door of the Commons Hub
+# Open Door
+Open the door of the Commons Hub Brussels via a discord bot.
+
+Join the #door channel on discord.commonshub.brussels to open the door (you have to be a member).
+You can use the `/open` command or just say "open" in that channel.
+
+## How does it work?
+The ESP32 is directly connected to the parlophone. It checks every 3s an API endpoint that returns 200 status code when the door should open.
+
+## Installation
+
+### Set up the ESP32
+
+Rename `credentials.example.py` to `credentials.py` and change the wifi settings (SSID and password).
+
+Install dependencies:
+
+```
+pip install esptool==4.8.1
+pip install adafruit-ampy
+```
+
+Flash the ESP32:
+
+```
+python3 esp32/flash.py /dev/tty.usdmodem101
+```
+
+Replace `/dev/tty.usdmodem101` by the right port for your machine (`ls /dev/tty.*`).
+
+Then upload the scripts:
+
+```
+python esp32/install.py /dev/tty.usdmodem101
+```
+
+### Run the server and discord bot
+
+Rename `.env.example` to `.env` and change the environment variables `DISCORD_BOT_TOKEN` (you can get one in the developer portal of discord), `DISCORD_CHANNEL_ID` and `SECRET`.
+
+Make sure you have `applications.commands` and `bot` in scopes and `Manage messages` and `Send messages` in permissions.
+
+Then run
+
+```
+npm install
+npm start
+```
+
+To open the door:
+
+```
+curl http://localhost:3000/open?secret=YOURSECRET
+```
+
+Or from the discord channel (make sure the bot has been installed and its role has been added to the permission of the channel), type `open` or use the `/open` command.
+
+## Contributors
+
+- Nicolas ([@nicolasdb](https://github.com/nicolasdb))
+- Xavier ([@xdamman](https://github.com/xdamman))

@@ -9,7 +9,7 @@ const {
 
 // Get bot token and allowed channel ID from the environment variables
 const token = process.env.DISCORD_BOT_TOKEN;
-const allowedChannelId = "1306678821751230514"; // Replace with your specific channel ID
+const allowedChannelId = process.env.DISCORD_CHANNEL_ID;
 
 // Initialize the bot client
 const client = new Client({
