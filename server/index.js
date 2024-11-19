@@ -103,7 +103,7 @@ client.on("messageCreate", async (message) => {
   console.log(`Received message: ${message.content}`);
 
   // Example: respond to specific messages
-  if (message.content.toLowerCase() === "open") {
+  if (message.content.toLowerCase().trim() === "open") {
     // console.log(JSON.stringify(message.author, null, 2));
     addUser(message.author);
     openDoor(message.author.id, client.user.tag);

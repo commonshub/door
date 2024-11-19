@@ -30,8 +30,14 @@ Replace `/dev/tty.usdmodem101` by the right port for your machine (`ls /dev/tty.
 
 Then upload the scripts:
 
+```bash
+$> python esp32/install.py /dev/tty.usbmodem101
 ```
-python esp32/install.py /dev/tty.usbmodem101
+
+and start the ESP32:
+
+```bash
+$> ampy run main.py --port /dev/tty.usbmodem101
 ```
 
 ### Run the server and discord bot
@@ -42,15 +48,15 @@ Make sure you have `applications.commands` and `bot` in scopes and `Manage messa
 
 Then run
 
-```
-npm install
-npm start
+```bash
+$> npm install
+$> npm start
 ```
 
 To open the door:
 
-```
-curl http://localhost:3000/open?secret=YOURSECRET
+```bash
+$> curl http://localhost:3000/open?secret=YOURSECRET
 ```
 
 Or from the discord channel (make sure the bot has been installed and its role has been added to the permission of the channel), type `open` or use the `/open` command.
@@ -66,6 +72,11 @@ You can also check the status of each device connected to the server via `/statu
 ```
 http://localhost:3000/status
 ```
+
+## TODO
+
+- [ ] Read the history of the discord channel as the server may sometime restart (e.g. on Vercel) to repopulate the log of the day
+- [ ] Create a Citizen Wallet plugin to allow people with a certain balance of Commons Hub Tokens to open the door.
 
 ## Contributors
 
