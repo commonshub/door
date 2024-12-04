@@ -6,8 +6,17 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require("discord.js");
+const {
+  verifyAccountOwnership,
+  getAccountBalance,
+  getProfileFromAddress,
+} = require("./cw/cw");
 const express = require("express");
 const path = require("path");
+const community = require("./cw/community.json");
+
+const DEFAULT_AVATAR =
+  "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp";
 
 // Get bot token and allowed channel ID from the environment variables
 const token = process.env.DISCORD_BOT_TOKEN;
@@ -155,14 +164,74 @@ setInterval(() => {
 }, 1000 * 60 * 60 * 24); // reset log every 24h
 
 // Route to open the door if the correct secret is provided
-app.get("/open", (req, res) => {
-  const { secret } = req.query;
-  const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-  if (secret === SECRET) {
-    openDoor(ip, req.headers["user-agent"]);
-    res.send("Door is now open for 3 seconds");
+app.get("/open", async (req, res) => {
+  const { sigAuthAccount, sigAuthExpiry, sigAuthSignature, sigAuthRedirect } =
+    req.query;
+
+  let connectedAccount;
+  if (sigAuthAccount && sigAuthExpiry && sigAuthSignature && sigAuthRedirect) {
+    try {
+      if (new Date().getTime() > new Date(sigAuthExpiry).getTime()) {
+        throw new Error("Signature expired");
+      }
+
+      const message = `Signature auth for ${sigAuthAccount} with expiry ${sigAuthExpiry} and redirect ${encodeURIComponent(
+        sigAuthRedirect
+      )}`;
+
+      const isOwner = await verifyAccountOwnership(
+        community,
+        sigAuthAccount,
+        message,
+        sigAuthSignature
+      );
+      if (!isOwner) {
+        throw new Error("Invalid signature");
+      }
+      connectedAccount = sigAuthAccount;
+    } catch (e) {
+      console.error("Failed to verify signature:", e);
+      // You might want to handle this error case appropriately
+    }
+  }
+
+  if (!connectedAccount) {
+    return res.send(generateNoAppHtml());
+  }
+
+  const balance = await getAccountBalance(community, connectedAccount);
+
+  const decimals = community.token.decimals;
+  const balanceFormatted = Number(balance) / 10 ** decimals;
+
+  const profile = await getProfileFromAddress(community, connectedAccount);
+
+  if (balanceFormatted > 0) {
+    // Create a user object that matches the expected structure
+    const user = {
+      id: connectedAccount,
+      username: profile?.username || connectedAccount.slice(0, 8),
+      tag: profile?.username || connectedAccount.slice(0, 8),
+      globalName: profile?.username,
+      avatarURL: profile?.image_medium || null,
+    };
+
+    addUser(user);
+    openDoor(connectedAccount, (profile && profile.username) || "unknown");
+
+    // Send message to Discord channel
+    const channel = client.channels.cache.get(allowedChannelId);
+    if (channel) {
+      await channel.send(
+        `🚪 Door opened by ${
+          profile?.username || connectedAccount.slice(0, 8)
+        } via Citizen Wallet`
+      );
+    }
+
+    return res.send(generateOpenHtml(profile));
   } else {
-    res.status(403).send("Forbidden: Invalid secret");
+    return res.send(generateForbiddenHtml(profile));
   }
 });
 
@@ -281,6 +350,92 @@ function generateHtml(doorlog) {
       <meta name="viewport" content="width=device-width, initial-scale=1">
     </head>
     <body>${body}</body>
+  </html>
+`;
+
+  return html;
+}
+
+function generateOpenHtml(profile) {
+  const body = `
+  <img src="${
+    profile?.image_medium || DEFAULT_AVATAR
+  }" alt="Avatar" class="avatar" style="height: 100px; width: 100px; border-radius: 50%;">
+  <h1>Welcome ${profile?.username || "unknown"}!</h1>
+  
+  <h2>Door opened</h2>
+  ${avatarGrid()}
+  <a href="https://app.citizenwallet.xyz/close">Close</a>
+`;
+
+  const html = `
+  <html>
+    <head>
+      <link rel="stylesheet" href="/styles.css">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <body>${body}</body>
+    <script>
+      setTimeout(() => {
+        window.location.href = "https://app.citizenwallet.xyz/close";
+      }, 5000);
+    </script>
+  </html>
+`;
+
+  return html;
+}
+
+function generateNoAppHtml() {
+  const body = `
+  <img src="/commonshub-icon.svg" class="logo" />
+  <div style="text-align: center; padding: 10px;">
+    <h1>Welcome to the Commons Hub!</h1>
+    <p>To open the door, scan the QR Code from the Citizen Wallet.</p>
+    <a href="https://app.citizenwallet.xyz/#/?alias=${community.community.alias}&dl=onboarding" >Open Citizen Wallet</a>
+  </div>
+`;
+
+  const html = `
+  <html>
+    <head>
+      <link rel="stylesheet" href="/styles.css">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <body>${body}</body>
+    <script>
+      setTimeout(() => {
+        window.location.href = "https://app.citizenwallet.xyz/close";
+      }, 5000);
+    </script>
+  </html>
+`;
+
+  return html;
+}
+
+function generateForbiddenHtml(profile) {
+  const body = `
+  <img src="/commonshub-icon.svg" class="logo" />
+  <div style="text-align: center; padding: 10px;">
+    <h2>You need to be a member to access this door</h2>
+  <p>Please join the Commons Hub to earn some tokens and try again.</p>
+  </div>
+  <a href="https://app.citizenwallet.xyz/close" >Close</a>
+`;
+
+  const html = `
+  <html>
+    <head>
+      <link rel="stylesheet" href="/styles.css">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <body>${body}</body>
+    <script>
+      setTimeout(() => {
+        window.location.href = "https://app.citizenwallet.xyz/close";
+      }, 5000);
+    </script>
   </html>
 `;
 
