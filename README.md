@@ -82,3 +82,4 @@ http://localhost:3000/status
 
 - Nicolas ([@nicolasdb](https://github.com/nicolasdb))
 - Xavier ([@xdamman](https://github.com/xdamman))
+- Kevin ([@kevtechi](https://github.com/kevtechi))
