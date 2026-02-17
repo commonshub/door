@@ -23,6 +23,9 @@ import { dirname } from "path";
 import crypto from "crypto";
 import { verifyMessage, Wallet } from "ethers";
 import fs from "fs";
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,7 +48,12 @@ const funFacts = [];
 
 const d = new Date();
 console.log(">>> door started", d.toISOString());
-console.log(">>> Timezone:", process.env.TZ, "| Local time:", d.toLocaleString("en-GB", { timeZone: process.env.TZ }));
+console.log(
+  ">>> Timezone:",
+  process.env.TZ,
+  "| Local time:",
+  d.toLocaleString("en-GB", { timeZone: process.env.TZ }),
+);
 
 const rest = new REST({ version: "10" }).setToken(token);
 
@@ -611,11 +619,11 @@ function openDoor(userid, agent) {
     agent,
   });
 
-  // Set a timer to reset `isDoorOpen` after 3.5 seconds
+  // Set a timer to reset `isDoorOpen` after 4 seconds
   setTimeout(() => {
     isDoorOpen = false;
     console.log("Closing door");
-  }, 3500);
+  }, 4000);
 }
 
 setInterval(
