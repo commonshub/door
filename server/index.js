@@ -203,13 +203,31 @@ const daysOfWeek = [
   "Saturday",
 ];
 
+function getLocalDateString(date = new Date()) {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: process.env.TZ || "Europe/Brussels",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function roleDateRangeAllows(role, date = new Date()) {
+  if (!role.dateRange) {
+    return true;
+  }
+
+  const today = getLocalDateString(date);
+  return today >= role.dateRange.start && today <= role.dateRange.end;
+}
+
 function getOpeningHours(roleId) {
   const role = accessRoles.find((r) => r.roleId === roleId);
   if (!role) {
     return "never";
   }
   let days = "";
-  if (role.daysOfWeek === "anytime" && role.timeRange === "anytime") {
+  if (!role.dateRange && role.daysOfWeek === "anytime" && role.timeRange === "anytime") {
     return "anytime";
   }
   if (role.daysOfWeek === "anytime") {
@@ -223,7 +241,10 @@ function getOpeningHours(roleId) {
   } else {
     hours = `between ${role.hourRange[0]} and ${role.hourRange[1]}`;
   }
-  return `${days} ${hours}`;
+  const dates = role.dateRange
+    ? `from ${role.dateRange.start} to ${role.dateRange.end} `
+    : "";
+  return `${dates}${days} ${hours}`;
 }
 
 function hasAccess(userid) {
@@ -232,6 +253,11 @@ function hasAccess(userid) {
   const currentHour = new Date().getHours();
 
   const openRoles = accessRoles.filter((r) => {
+    // Can this role open the door during its configured date window?
+    if (!roleDateRangeAllows(r)) {
+      return false;
+    }
+
     // Can this role open the door today?
     if (r.daysOfWeek !== "anytime" && !r.daysOfWeek.includes(currentDay)) {
       return false;
