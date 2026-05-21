@@ -17,8 +17,22 @@ describe("Discord Role-Based Access Control", () => {
   /**
    * Mock access control function (simulates server logic)
    */
-  function checkAccess(userRoles, currentDay, currentHour, accessRoles) {
+  function checkAccess(
+    userRoles,
+    currentDay,
+    currentHour,
+    accessRoles,
+    currentDate = "2026-01-01",
+  ) {
     const openRoles = accessRoles.filter((role) => {
+      // Check date restriction
+      if (
+        role.dateRange &&
+        (currentDate < role.dateRange.start || currentDate > role.dateRange.end)
+      ) {
+        return false;
+      }
+
       // Check day restriction
       if (role.daysOfWeek !== "anytime" && !role.daysOfWeek.includes(currentDay)) {
         return false;
@@ -148,6 +162,70 @@ describe("Discord Role-Based Access Control", () => {
 
       const result4 = checkAccess(userRoles, "Sunday", 14, accessRoles);
       expect(result4.granted).toBe(false);
+    });
+  });
+
+  describe("Date-Restricted 24/7 Access", () => {
+    test("should grant access inside the inclusive date range", () => {
+      const userRoles = ["date_range_role_id"];
+      const accessRoles = [
+        {
+          roleId: "date_range_role_id",
+          name: "June 8-12 24/7 Access",
+          dateRange: { start: "2026-06-08", end: "2026-06-12" },
+          daysOfWeek: "anytime",
+          timeRange: "anytime",
+        },
+      ];
+
+      const start = checkAccess(
+        userRoles,
+        "Monday",
+        0,
+        accessRoles,
+        "2026-06-08",
+      );
+      const end = checkAccess(
+        userRoles,
+        "Friday",
+        23,
+        accessRoles,
+        "2026-06-12",
+      );
+
+      expect(start.granted).toBe(true);
+      expect(end.granted).toBe(true);
+    });
+
+    test("should deny access outside the inclusive date range", () => {
+      const userRoles = ["date_range_role_id"];
+      const accessRoles = [
+        {
+          roleId: "date_range_role_id",
+          name: "June 8-12 24/7 Access",
+          dateRange: { start: "2026-06-08", end: "2026-06-12" },
+          daysOfWeek: "anytime",
+          timeRange: "anytime",
+        },
+      ];
+
+      const before = checkAccess(
+        userRoles,
+        "Sunday",
+        23,
+        accessRoles,
+        "2026-06-07",
+      );
+      const after = checkAccess(
+        userRoles,
+        "Saturday",
+        0,
+        accessRoles,
+        "2026-06-13",
+      );
+
+      expect(before.granted).toBe(false);
+      expect(after.granted).toBe(false);
     });
   });
 
