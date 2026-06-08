@@ -21,17 +21,17 @@
     "testMatch": ["**/*.test.js"]
   },
   "dependencies": {
-    "@citizenwallet/sdk": "^2.0.44",
-    "@discordjs/rest": "^2.4.0",
-    "discord-api-types": "^0.37.105",
-    "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5",
-    "ethers": "^6.13.4",
-    "express": "^4.18.2",
-    "marked": "^17.0.1"
+    "@citizenwallet/sdk": "^2.0.130",
+    "@discordjs/rest": "^2.6.1",
+    "discord-api-types": "^0.37.120",
+    "discord.js": "^14.26.4",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.16.0",
+    "express": "^4.22.2",
+    "marked": "^17.0.6"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "jest": "^30.2.0"
+    "jest": "^30.4.2"
   }
 }
