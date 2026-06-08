@@ -1,11 +1,14 @@
 /**
- * Status route - GET /status
- * Returns status of connected door hardware clients
+ * Status routes
+ * - GET /status.json : machine-readable status of connected door hardware
+ * - GET /status      : human-readable HTML status incl. git version
  */
-export default function registerStatusRoute(app, dependencies) {
-  const { status_log } = dependencies;
+import { generateStatusPage } from "./status.html.js";
 
-  app.get("/status", (req, res) => {
+export default function registerStatusRoute(app, dependencies) {
+  const { status_log, gitInfo } = dependencies;
+
+  function getStatus() {
     const clients = Object.keys(status_log);
     const status = {};
 
@@ -31,9 +34,20 @@ export default function registerStatusRoute(app, dependencies) {
       }
     });
 
+    return status;
+  }
+
+  app.get("/status.json", (req, res) => {
     res
       .status(200)
       .header("Content-Type", "application/json")
-      .send(JSON.stringify(status, null, 2));
+      .send(JSON.stringify(getStatus(), null, 2));
+  });
+
+  app.get("/status", (req, res) => {
+    res
+      .status(200)
+      .header("content-type", "text/html")
+      .send(generateStatusPage(getStatus(), gitInfo));
   });
 }

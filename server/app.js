@@ -16,6 +16,8 @@ import registerCheckRoute from "./routes/check/index.js";
 import registerLogRoute from "./routes/log/index.js";
 import registerStatusRoute from "./routes/status/index.js";
 import registerTokenRoute from "./routes/token/index.js";
+import registerAccessRoute from "./routes/access/index.js";
+import registerRefreshRoute from "./routes/refresh/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,6 +36,8 @@ export function createApp(dependencies) {
   registerLogRoute(app, dependencies);
   registerStatusRoute(app, dependencies);
   registerTokenRoute(app, dependencies);
+  registerAccessRoute(app, dependencies);
+  registerRefreshRoute(app, dependencies);
 
   // Serve static files from 'public' directory
   app.use(express.static(path.join(__dirname, "public")));

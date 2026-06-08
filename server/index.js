@@ -23,6 +23,7 @@ import { dirname } from "path";
 import crypto from "crypto";
 import { verifyMessage, Wallet } from "ethers";
 import fs from "fs";
+import { execSync } from "child_process";
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -34,6 +35,44 @@ const community = loadJSON("./lib/citizenwallet/community.json");
 
 const DEFAULT_AVATAR =
   "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp";
+
+/**
+ * Read the current git version (short hash + latest commit message).
+ * Computed once at startup; falls back gracefully when git is unavailable
+ * (e.g. when deployed from a tarball without a .git directory).
+ */
+function getGitInfo() {
+  const run = (cmd) => execSync(cmd, { cwd: __dirname }).toString().trim();
+  try {
+    return {
+      hash: run("git rev-parse --short HEAD"),
+      message: run("git log -1 --pretty=%s"),
+      date: run("git log -1 --pretty=%cI"),
+    };
+  } catch (error) {
+    console.warn(">>> Could not read git info:", error.message);
+    return { hash: "unknown", message: "", date: "" };
+  }
+}
+
+const gitInfo = getGitInfo();
+console.log(">>> Git version:", gitInfo.hash, "-", gitInfo.message);
+
+/**
+ * Build a CDN avatar URL for a Discord guild member returned by the REST API.
+ * Prefers the guild-specific avatar, then the global user avatar, then a
+ * default placeholder.
+ */
+function getDiscordAvatarUrl(member) {
+  const userId = member.user.id;
+  if (member.avatar) {
+    return `https://cdn.discordapp.com/guilds/${process.env.DISCORD_GUILD_ID}/users/${userId}/avatars/${member.avatar}.png?size=128`;
+  }
+  if (member.user.avatar) {
+    return `https://cdn.discordapp.com/avatars/${userId}/${member.user.avatar}.png?size=128`;
+  }
+  return DEFAULT_AVATAR;
+}
 
 // Get bot token and allowed channel ID from the environment variables
 const token = process.env.DISCORD_BOT_TOKEN;
@@ -126,32 +165,100 @@ if (!serverKeyExists) {
   console.log(">>> ✅ Server public key added to authorized keys");
 }
 
-// Append-only log file for all door access
-const LOG_FILE = path.join(process.env.LOG_DIR || __dirname, "door_access.log");
+// Resolve a writable log directory. Defaults to /data (typical mounted
+// volume in production); falls back to the app directory in local dev or
+// whenever /data isn't writable.
+function resolveLogDir() {
+  const dir = process.env.LOG_DIR || "/data";
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  } catch (error) {
+    console.warn(
+      `>>> LOG_DIR ${dir} not usable (${error.message}); falling back to ${__dirname}`,
+    );
+    return __dirname;
+  }
+}
+
+// Append-only log files: successful accesses and denied attempts.
+const LOG_DIR = resolveLogDir();
+const ACCESS_LOG_FILE = path.join(LOG_DIR, "door_access.log");
+const ERROR_LOG_FILE = path.join(LOG_DIR, "door_errors.log");
+console.log(">>> Logging to", LOG_DIR);
+
+function appendLogLine(file, entry) {
+  try {
+    fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf8");
+  } catch (error) {
+    console.error("Failed to write to log file:", file, error.message);
+  }
+}
 
 /**
- * Append door access to log file
+ * Read the last `limit` JSON-line entries from a log file (newest last).
+ * Returns [] if the file doesn't exist yet.
+ */
+function readLogEntries(file, limit = 200) {
+  try {
+    const data = fs.readFileSync(file, "utf8");
+    return data
+      .split("\n")
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Failed to read log file:", file, error.message);
+    }
+    return [];
+  }
+}
+
+/**
+ * Append a successful door access to the access log.
  * @param {string} name - Name of person accessing
  * @param {string} method - Access method (discord, citizenwallet, token, signature, shortcut)
  * @param {Object} metadata - Additional metadata
  */
 function logDoorAccess(name, method, metadata = {}) {
-  const timestamp = new Date().toISOString();
-  const logEntry = {
-    timestamp,
+  appendLogLine(ACCESS_LOG_FILE, {
+    timestamp: new Date().toISOString(),
+    status: "granted",
     name,
     method,
     ...metadata,
-  };
-
-  const logLine = JSON.stringify(logEntry) + "\n";
-
-  try {
-    fs.appendFileSync(LOG_FILE, logLine, "utf8");
-  } catch (error) {
-    console.error("Failed to write to log file:", error);
-  }
+  });
 }
+
+/**
+ * Append a denied/failed door attempt to the error log, including the reason
+ * access was not granted, so it can be debugged from the /log page.
+ * @param {string} name - Name of person attempting access
+ * @param {string} reason - Human-readable reason access was denied
+ * @param {Object} metadata - Additional metadata (userId, username, roles, ...)
+ */
+function logDoorError(name, reason, metadata = {}) {
+  console.log(">>> Door access denied:", name, "-", reason);
+  appendLogLine(ERROR_LOG_FILE, {
+    timestamp: new Date().toISOString(),
+    status: "denied",
+    name,
+    reason,
+    ...metadata,
+  });
+}
+
+// Timestamp of the last successful role reload (for the /access page).
+let lastReloadAt = null;
 
 const reloadAccessRoles = async () => {
   for (const role of accessRoles) {
@@ -166,6 +273,18 @@ const reloadAccessRoles = async () => {
         userIdToRoles[member.user.id].push(role.roleId);
       }
       role.memberIds.push(member.user.id);
+
+      // Cache member display info for pages like /access. Don't clobber
+      // richer data set by addUser() when someone actually opens the door.
+      if (!users[member.user.id]) {
+        users[member.user.id] = {
+          displayName:
+            member.nick || member.user.global_name || member.user.username,
+          username: member.user.username,
+          tag: member.user.username,
+          avatar: getDiscordAvatarUrl(member),
+        };
+      }
     }
     if (role.timeRange !== "anytime") {
       const hourRange = role.timeRange.split("-");
@@ -190,6 +309,7 @@ const reloadAccessRoles = async () => {
     }, 1000 * 1);
   }
 
+  lastReloadAt = new Date();
   console.log(">>> Access roles loaded");
 };
 
@@ -245,6 +365,69 @@ function getOpeningHours(roleId) {
     ? `from ${role.dateRange.start} to ${role.dateRange.end} `
     : "";
   return `${dates}${days} ${hours}`;
+}
+
+/**
+ * Whether a role grants access on the given day (date window + day of week),
+ * ignoring the hour-of-day restriction. Used by the /access page to list the
+ * roles that can open the door today.
+ */
+function isRoleActiveToday(role, date = new Date()) {
+  if (!roleDateRangeAllows(role, date)) {
+    return false;
+  }
+  const currentDay = daysOfWeek[date.getDay()];
+  if (role.daysOfWeek !== "anytime" && !role.daysOfWeek.includes(currentDay)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Explain why a user was denied access, for logging/debugging. Mirrors the
+ * logic in hasAccess() but returns a human-readable reason instead of a bool.
+ */
+function getNoAccessReason(userid, date = new Date()) {
+  const userRoles = userIdToRoles[userid];
+  if (!userRoles || userRoles.length === 0) {
+    return "User has no cached access roles. Either they hold no configured role, or the role was assigned after the last hourly reload (try again after the next reload).";
+  }
+
+  const currentDay = daysOfWeek[date.getDay()];
+  const currentHour = date.getHours();
+  const reasons = [];
+
+  for (const roleId of userRoles) {
+    const role = accessRoles.find((r) => r.roleId === roleId);
+    if (!role) {
+      reasons.push(`Role ${roleId} is not in access_roles.json`);
+      continue;
+    }
+    if (!roleDateRangeAllows(role, date)) {
+      reasons.push(
+        `${role.name}: outside date window ${role.dateRange.start}–${role.dateRange.end} (today is ${getLocalDateString(date)})`,
+      );
+    } else if (
+      role.daysOfWeek !== "anytime" &&
+      !role.daysOfWeek.includes(currentDay)
+    ) {
+      reasons.push(
+        `${role.name}: not allowed on ${currentDay} (allowed: ${role.daysOfWeek.join(", ")})`,
+      );
+    } else if (
+      role.timeRange !== "anytime" &&
+      role.hourRange &&
+      !(currentHour >= role.hourRange[0] && currentHour <= role.hourRange[1])
+    ) {
+      reasons.push(
+        `${role.name}: current hour ${currentHour}h is outside ${role.hourRange[0]}–${role.hourRange[1]}h`,
+      );
+    } else {
+      reasons.push(`${role.name}: role grants access (unexpected denial)`);
+    }
+  }
+
+  return reasons.join("; ") || "No matching open role";
 }
 
 function hasAccess(userid) {
@@ -518,6 +701,15 @@ async function handleMessage(message) {
     try {
       const roles = userIdToRoles[message.author.id];
       if (!roles) {
+        logDoorError(
+          message.author.displayName || message.author.username,
+          getNoAccessReason(message.author.id),
+          {
+            userId: message.author.id,
+            username: message.author.username,
+            method: "discord",
+          },
+        );
         if (DRY_RUN) {
           console.log(
             ">>> DRY RUN: ",
@@ -571,6 +763,16 @@ async function handleMessage(message) {
         message.reply(`${reply} \n${pickRandomReply(message.author)}`);
       } else {
         const role = accessRoles.find((r) => r.roleId === roles[0]);
+        logDoorError(
+          message.author.displayName || message.author.username,
+          getNoAccessReason(message.author.id),
+          {
+            userId: message.author.id,
+            username: message.author.username,
+            roles,
+            method: "discord",
+          },
+        );
         if (!role) {
           message.reply(
             "You don't have access to the Commons Hub Brussels. Become a member to access the door.",
@@ -581,6 +783,15 @@ async function handleMessage(message) {
         return;
       }
     } catch (error) {
+      logDoorError(
+        message.author.displayName || message.author.username,
+        `Unexpected error: ${error.message}`,
+        {
+          userId: message.author.id,
+          username: message.author.username,
+          method: "discord",
+        },
+      );
       if (DRY_RUN) {
         console.log(">>> DRY RUN: ", error);
         return;
@@ -800,6 +1011,16 @@ const dependencies = {
   SECRET,
   doorlog,
   status_log,
+  accessRoles,
+  getOpeningHours,
+  isRoleActiveToday,
+  gitInfo,
+  logDoorError,
+  getAccessLog: () => readLogEntries(ACCESS_LOG_FILE),
+  getErrorLog: () => readLogEntries(ERROR_LOG_FILE),
+  LOG_DIR,
+  reloadAccessRoles,
+  getLastReloadAt: () => lastReloadAt,
 };
 
 // Create Express app with all routes
