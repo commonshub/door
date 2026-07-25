@@ -667,9 +667,6 @@ async function registerCommands() {
       sub.setName("list").setDescription("Show all access roles and their schedules"),
     )
     .addSubcommand((sub) =>
-      sub.setName("status").setDescription("Show door hardware status"),
-    )
-    .addSubcommand((sub) =>
       sub
         .setName("add")
         .setDescription("Add a new access role")
@@ -720,6 +717,10 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName("open")
       .setDescription("Opens the door")
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("present")
+      .setDescription("Show who opened the door today")
       .toJSON(),
     accessCommand.toJSON(),
   ];
@@ -790,29 +791,6 @@ async function memberHasAdminRole(interaction) {
   return false;
 }
 
-function formatStatusForDiscord(status_log) {
-  const clients = Object.keys(status_log);
-  if (clients.length === 0) return "No door hardware has connected yet.";
-
-  const lines = [];
-  for (const ip of clients) {
-    const entries = status_log[ip];
-    if (!entries || entries.length === 0) continue;
-    const last = entries[entries.length - 1];
-    const lastTime = new Date(last.timestamp);
-    const elapsed = Date.now() - lastTime.getTime();
-    const timeStr = lastTime.toLocaleString("en-GB", { timeZone: "Europe/Brussels" });
-    const ua = last.userAgent || "unknown";
-    const isEsp = /micropython|esp/i.test(ua);
-    const label = isEsp ? `ESP32 (${ip})` : `Unknown client (${ip})`;
-    const online = elapsed < 10000;
-    const status = online ? "Online" : `Offline since ${timeStr}`;
-    const checkCount = entries.length;
-    lines.push(`**${label}** — ${status}\nUser-Agent: \`${ua}\`\nChecks today: ${checkCount}`);
-  }
-  return lines.join("\n\n");
-}
-
 async function handleAccessInteraction(interaction) {
   const subcommand = interaction.options.getSubcommand();
 
@@ -824,14 +802,6 @@ async function handleAccessInteraction(interaction) {
     const lines = accessRoles.map((r, i) => `${i + 1}. ${formatRoleForDisplay(r)}`);
     await interaction.reply({
       content: `**Door Access Settings**\n\n${lines.join("\n\n")}`,
-      ephemeral: false,
-    });
-    return;
-  }
-
-  if (subcommand === "status") {
-    await interaction.reply({
-      content: `**Door Hardware Status**\n\n${formatStatusForDiscord(status_log)}`,
       ephemeral: false,
     });
     return;
@@ -959,6 +929,36 @@ client.on("interactionCreate", async (interaction) => {
       console.error("Error handling /open:", error);
       await interaction.reply({ content: "Something went wrong.", ephemeral: true });
     }
+    return;
+  }
+
+  if (interaction.commandName === "present") {
+    const todayUserIds = getTodayUsers();
+    const presentTodayRoleId = process.env.DISCORD_PRESENT_TODAY_ROLE_ID;
+
+    if (todayUserIds.length === 0) {
+      await interaction.reply({
+        content: "Nobody has opened the door yet today.",
+        ephemeral: false,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const names = todayUserIds.map((id) => {
+      const user = users[id];
+      return user ? user.displayName : `<@${id}>`;
+    });
+
+    const roleHint = presentTodayRoleId
+      ? `\n\nTo ping everyone present today, mention <@&${presentTodayRoleId}>.`
+      : "";
+
+    await interaction.reply({
+      content: `**Present today** (${names.length})\n${names.join(", ")}${roleHint}`,
+      ephemeral: false,
+      allowedMentions: { parse: [] },
+    });
     return;
   }
 
