@@ -660,11 +660,14 @@ loginToDiscord();
 
 // Add this function to register the commands
 async function registerCommands() {
-  const settingsCommand = new SlashCommandBuilder()
-    .setName("settings")
+  const accessCommand = new SlashCommandBuilder()
+    .setName("access")
     .setDescription("Manage door access roles and schedules")
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("Show all access roles and their schedules"),
+    )
+    .addSubcommand((sub) =>
+      sub.setName("status").setDescription("Show door hardware status"),
     )
     .addSubcommand((sub) =>
       sub
@@ -718,7 +721,7 @@ async function registerCommands() {
       .setName("open")
       .setDescription("Opens the door")
       .toJSON(),
-    settingsCommand.toJSON(),
+    accessCommand.toJSON(),
   ];
 
   try {
@@ -787,7 +790,30 @@ async function memberHasAdminRole(interaction) {
   return false;
 }
 
-async function handleSettingsInteraction(interaction) {
+function formatStatusForDiscord(status_log) {
+  const clients = Object.keys(status_log);
+  if (clients.length === 0) return "No door hardware has connected yet.";
+
+  const lines = [];
+  for (const ip of clients) {
+    const entries = status_log[ip];
+    if (!entries || entries.length === 0) continue;
+    const last = entries[entries.length - 1];
+    const lastTime = new Date(last.timestamp);
+    const elapsed = Date.now() - lastTime.getTime();
+    const timeStr = lastTime.toLocaleString("en-GB", { timeZone: "Europe/Brussels" });
+    const ua = last.userAgent || "unknown";
+    const isEsp = /micropython|esp/i.test(ua);
+    const label = isEsp ? `ESP32 (${ip})` : `Unknown client (${ip})`;
+    const online = elapsed < 10000;
+    const status = online ? "Online" : `Offline since ${timeStr}`;
+    const checkCount = entries.length;
+    lines.push(`**${label}** — ${status}\nUser-Agent: \`${ua}\`\nChecks today: ${checkCount}`);
+  }
+  return lines.join("\n\n");
+}
+
+async function handleAccessInteraction(interaction) {
   const subcommand = interaction.options.getSubcommand();
 
   if (subcommand === "list") {
@@ -798,6 +824,14 @@ async function handleSettingsInteraction(interaction) {
     const lines = accessRoles.map((r, i) => `${i + 1}. ${formatRoleForDisplay(r)}`);
     await interaction.reply({
       content: `**Door Access Settings**\n\n${lines.join("\n\n")}`,
+      ephemeral: false,
+    });
+    return;
+  }
+
+  if (subcommand === "status") {
+    await interaction.reply({
+      content: `**Door Hardware Status**\n\n${formatStatusForDiscord(status_log)}`,
       ephemeral: false,
     });
     return;
@@ -818,7 +852,7 @@ async function handleSettingsInteraction(interaction) {
     const dateEnd = interaction.options.getString("date_end");
 
     if (accessRoles.some((r) => r.roleId === role.id)) {
-      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/settings edit\` instead.`, ephemeral: true });
+      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/access edit\` instead.`, ephemeral: true });
       return;
     }
 
@@ -928,11 +962,11 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === "settings") {
+  if (interaction.commandName === "access") {
     try {
-      await handleSettingsInteraction(interaction);
+      await handleAccessInteraction(interaction);
     } catch (error) {
-      console.error("Error handling /settings:", error);
+      console.error("Error handling /access:", error);
       const reply = { content: "Something went wrong.", ephemeral: true };
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp(reply);

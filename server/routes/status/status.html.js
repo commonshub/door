@@ -13,17 +13,16 @@ function escapeHtml(value = "") {
 }
 
 export function generateStatusPage(status, gitInfo = {}) {
-  const clients = Object.keys(status);
-
   const clientsHtml =
-    clients.length > 0
-      ? clients
+    status.length > 0
+      ? status
           .map(
-            (ip) => `
+            (client) => `
         <div class="log-entry">
           <div class="log-content">
-            <div class="username">${escapeHtml(ip)}</div>
-            <div class="timestamp">${escapeHtml(status[ip])}</div>
+            <div class="username">${escapeHtml(client.label)} ${client.online ? "🟢" : "🔴"}</div>
+            <div class="timestamp">${client.online ? "Online" : `Offline since ${escapeHtml(client.lastSeen)}`}</div>
+            <div class="agent">${escapeHtml(client.userAgent)} · ${client.checksToday} checks today</div>
           </div>
         </div>`,
           )

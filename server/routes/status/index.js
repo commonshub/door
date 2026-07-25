@@ -10,38 +10,40 @@ export default function registerStatusRoute(app, dependencies) {
 
   function getStatus() {
     const clients = Object.keys(status_log);
-    const status = {};
+    const result = [];
 
     clients.forEach((ip) => {
-      if (status_log[ip].length === 0) {
-        status[ip] = "Online";
-      } else {
-        const lastLog = status_log[ip][status_log[ip].length - 1];
-        const lastTimestamp = new Date(lastLog.timestamp).toLocaleString(
-          "en-GB",
-          {
-            timeZone: "Europe/Brussels",
-          },
-        );
-        const elapsed = new Date() - new Date(lastLog.timestamp);
-        if (elapsed > 4000) {
-          status[ip] = `Offline since ${lastTimestamp} (${Math.round(
-            elapsed / 1000,
-          )}s ago)`;
-        } else {
-          status[ip] = `${lastLog.userAgent} online`;
-        }
-      }
+      const entries = status_log[ip];
+      if (!entries || entries.length === 0) return;
+
+      const lastLog = entries[entries.length - 1];
+      const lastTime = new Date(lastLog.timestamp);
+      const lastTimestamp = lastTime.toLocaleString("en-GB", {
+        timeZone: "Europe/Brussels",
+      });
+      const elapsed = Date.now() - lastTime.getTime();
+      const ua = lastLog.userAgent || "unknown";
+      const isEsp = /micropython|esp/i.test(ua);
+      const label = isEsp ? `ESP32 (${ip})` : `Unknown client (${ip})`;
+      const online = elapsed < 10000;
+
+      result.push({
+        label,
+        ip,
+        userAgent: ua,
+        isEsp,
+        online,
+        lastSeen: lastTimestamp,
+        checksToday: entries.length,
+      });
     });
 
-    return status;
+    result.sort((a, b) => (a.isEsp === b.isEsp ? 0 : a.isEsp ? -1 : 1));
+    return result;
   }
 
   app.get("/status.json", (req, res) => {
-    res
-      .status(200)
-      .header("Content-Type", "application/json")
-      .send(JSON.stringify(getStatus(), null, 2));
+    res.json(getStatus());
   });
 
   app.get("/status", (req, res) => {
