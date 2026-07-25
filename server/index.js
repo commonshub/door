@@ -96,8 +96,15 @@ console.log(
 
 const rest = new REST({ version: "10" }).setToken(token);
 
-const accessRoles = loadJSON("./access_roles.json");
+const ACCESS_ROLES_PATH = path.join(__dirname, "access_roles.json");
+const accessRoles = JSON.parse(fs.readFileSync(ACCESS_ROLES_PATH, "utf8"));
 const authorizedKeys = loadJSON("./authorized_keys.json");
+
+const SETTINGS_ADMIN_ROLE_ID = "1509246685199470672";
+
+function saveAccessRoles() {
+  fs.writeFileSync(ACCESS_ROLES_PATH, JSON.stringify(accessRoles, null, 2) + "\n", "utf8");
+}
 
 const userIdToRoles = {};
 
@@ -653,11 +660,65 @@ loginToDiscord();
 
 // Add this function to register the commands
 async function registerCommands() {
+  const settingsCommand = new SlashCommandBuilder()
+    .setName("settings")
+    .setDescription("Manage door access roles and schedules")
+    .addSubcommand((sub) =>
+      sub.setName("list").setDescription("Show all access roles and their schedules"),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("add")
+        .setDescription("Add a new access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Display name for the role").setRequired(true))
+        .addStringOption((opt) => opt.setName("description").setDescription("Description of the access rule").setRequired(true))
+        .addStringOption((opt) =>
+          opt.setName("days").setDescription("Days of week (anytime, or comma-separated: Monday,Tuesday,...)").setRequired(true),
+        )
+        .addStringOption((opt) =>
+          opt.setName("time").setDescription("Time range (anytime, or e.g. 18-23)").setRequired(true),
+        )
+        .addStringOption((opt) =>
+          opt.setName("date_start").setDescription("Optional date range start (YYYY-MM-DD)").setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt.setName("date_end").setDescription("Optional date range end (YYYY-MM-DD)").setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("edit")
+        .setDescription("Edit an existing access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to edit").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("New display name").setRequired(false))
+        .addStringOption((opt) => opt.setName("description").setDescription("New description").setRequired(false))
+        .addStringOption((opt) =>
+          opt.setName("days").setDescription("Days of week (anytime, or comma-separated: Monday,Tuesday,...)").setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt.setName("time").setDescription("Time range (anytime, or e.g. 18-23)").setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt.setName("date_start").setDescription("Date range start (YYYY-MM-DD, use 'none' to remove)").setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt.setName("date_end").setDescription("Date range end (YYYY-MM-DD, use 'none' to remove)").setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove")
+        .setDescription("Remove an access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to remove").setRequired(true)),
+    );
+
   const commands = [
     new SlashCommandBuilder()
       .setName("open")
       .setDescription("Opens the door")
       .toJSON(),
+    settingsCommand.toJSON(),
   ];
 
   try {
@@ -683,6 +744,204 @@ client.once("ready", async () => {
   await registerCommands();
   await loadGuild();
   await loadFunFacts();
+});
+
+const VALID_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function parseDaysOption(value) {
+  if (value.toLowerCase() === "anytime") return "anytime";
+  const days = value.split(",").map((d) => d.trim());
+  for (const day of days) {
+    if (!VALID_DAYS.includes(day)) return { error: `Invalid day: ${day}. Use: ${VALID_DAYS.join(", ")}` };
+  }
+  return days;
+}
+
+function parseTimeOption(value) {
+  if (value.toLowerCase() === "anytime") return "anytime";
+  if (!/^\d{1,2}-\d{1,2}$/.test(value)) return { error: "Time range must be 'anytime' or e.g. '18-23'" };
+  return value;
+}
+
+function formatRoleForDisplay(role) {
+  let schedule = "";
+  if (role.dateRange) {
+    schedule += `${role.dateRange.start} to ${role.dateRange.end}, `;
+  }
+  if (role.daysOfWeek === "anytime") {
+    schedule += "any day";
+  } else {
+    schedule += role.daysOfWeek.join(", ");
+  }
+  schedule += ", ";
+  schedule += role.timeRange === "anytime" ? "any time" : `${role.timeRange}h`;
+  return `**${role.name}** (<@&${role.roleId}>)\n${role.description}\nSchedule: ${schedule}`;
+}
+
+async function memberHasAdminRole(interaction) {
+  const member = interaction.member;
+  if (!member) return false;
+  const roles = member.roles;
+  if (Array.isArray(roles)) return roles.includes(SETTINGS_ADMIN_ROLE_ID);
+  if (roles?.cache) return roles.cache.has(SETTINGS_ADMIN_ROLE_ID);
+  return false;
+}
+
+async function handleSettingsInteraction(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "list") {
+    if (accessRoles.length === 0) {
+      await interaction.reply({ content: "No access roles configured.", ephemeral: true });
+      return;
+    }
+    const lines = accessRoles.map((r, i) => `${i + 1}. ${formatRoleForDisplay(r)}`);
+    await interaction.reply({
+      content: `**Door Access Settings**\n\n${lines.join("\n\n")}`,
+      ephemeral: false,
+    });
+    return;
+  }
+
+  if (!await memberHasAdminRole(interaction)) {
+    await interaction.reply({ content: "You don't have permission to change settings.", ephemeral: true });
+    return;
+  }
+
+  if (subcommand === "add") {
+    const role = interaction.options.getRole("role");
+    const name = interaction.options.getString("name");
+    const description = interaction.options.getString("description");
+    const daysRaw = interaction.options.getString("days");
+    const timeRaw = interaction.options.getString("time");
+    const dateStart = interaction.options.getString("date_start");
+    const dateEnd = interaction.options.getString("date_end");
+
+    if (accessRoles.some((r) => r.roleId === role.id)) {
+      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/settings edit\` instead.`, ephemeral: true });
+      return;
+    }
+
+    const days = parseDaysOption(daysRaw);
+    if (days.error) { await interaction.reply({ content: days.error, ephemeral: true }); return; }
+
+    const time = parseTimeOption(timeRaw);
+    if (time.error) { await interaction.reply({ content: time.error, ephemeral: true }); return; }
+
+    const newRole = { name, roleId: role.id, description, daysOfWeek: days, timeRange: time };
+    if (dateStart && dateEnd) {
+      newRole.dateRange = { start: dateStart, end: dateEnd };
+    }
+
+    accessRoles.push(newRole);
+    saveAccessRoles();
+    await reloadAccessRoles();
+
+    await interaction.reply({ content: `Added access role:\n${formatRoleForDisplay(newRole)}`, ephemeral: false });
+    return;
+  }
+
+  if (subcommand === "edit") {
+    const role = interaction.options.getRole("role");
+    const existing = accessRoles.find((r) => r.roleId === role.id);
+    if (!existing) {
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true });
+      return;
+    }
+
+    const name = interaction.options.getString("name");
+    const description = interaction.options.getString("description");
+    const daysRaw = interaction.options.getString("days");
+    const timeRaw = interaction.options.getString("time");
+    const dateStart = interaction.options.getString("date_start");
+    const dateEnd = interaction.options.getString("date_end");
+
+    if (name) existing.name = name;
+    if (description) existing.description = description;
+    if (daysRaw) {
+      const days = parseDaysOption(daysRaw);
+      if (days.error) { await interaction.reply({ content: days.error, ephemeral: true }); return; }
+      existing.daysOfWeek = days;
+    }
+    if (timeRaw) {
+      const time = parseTimeOption(timeRaw);
+      if (time.error) { await interaction.reply({ content: time.error, ephemeral: true }); return; }
+      existing.timeRange = time;
+    }
+    if (dateStart && dateEnd) {
+      existing.dateRange = { start: dateStart, end: dateEnd };
+    } else if (dateStart === "none" || dateEnd === "none") {
+      delete existing.dateRange;
+    }
+
+    saveAccessRoles();
+    await reloadAccessRoles();
+
+    await interaction.reply({ content: `Updated access role:\n${formatRoleForDisplay(existing)}`, ephemeral: false });
+    return;
+  }
+
+  if (subcommand === "remove") {
+    const role = interaction.options.getRole("role");
+    const idx = accessRoles.findIndex((r) => r.roleId === role.id);
+    if (idx === -1) {
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true });
+      return;
+    }
+    const removed = accessRoles.splice(idx, 1)[0];
+    saveAccessRoles();
+    await reloadAccessRoles();
+
+    await interaction.reply({ content: `Removed access role: **${removed.name}** (<@&${removed.roleId}>)`, ephemeral: false });
+    return;
+  }
+}
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === "open") {
+    try {
+      if (hasAccess(interaction.user.id)) {
+        await addUser(interaction.user, interaction.guildId);
+        const roles = userIdToRoles[interaction.user.id];
+        const firstRole = accessRoles.find((r) => r.roleId === roles?.[0]);
+        logDoorAccess(interaction.user.displayName || interaction.user.username, "discord-slash", {
+          userId: interaction.user.id,
+          username: interaction.user.username,
+          role: firstRole?.name,
+        });
+        openDoor(interaction.user.id, client.user.tag);
+        await interaction.reply({ content: `Door opened! ${firstRole?.description || ""}`, ephemeral: true });
+      } else {
+        logDoorError(
+          interaction.user.displayName || interaction.user.username,
+          getNoAccessReason(interaction.user.id),
+          { userId: interaction.user.id, username: interaction.user.username, method: "discord-slash" },
+        );
+        await interaction.reply({ content: "You don't have access at this time.", ephemeral: true });
+      }
+    } catch (error) {
+      console.error("Error handling /open:", error);
+      await interaction.reply({ content: "Something went wrong.", ephemeral: true });
+    }
+    return;
+  }
+
+  if (interaction.commandName === "settings") {
+    try {
+      await handleSettingsInteraction(interaction);
+    } catch (error) {
+      console.error("Error handling /settings:", error);
+      const reply = { content: "Something went wrong.", ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(reply);
+      } else {
+        await interaction.reply(reply);
+      }
+    }
+    return;
+  }
 });
 
 async function handleMessage(message) {
