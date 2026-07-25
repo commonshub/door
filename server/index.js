@@ -920,6 +920,7 @@ async function handleAccessInteraction(interaction) {
     saveAccessRoles();
     await reloadAccessRoles();
     await interaction.reply({ content: `Removed access role: **${removed.name}** (<@&${removed.roleId}>)`, ephemeral: false, allowedMentions: { parse: [] } });
+    sendDiscordMessage(`<@${interaction.user.id}> removed door access for <@&${removed.roleId}> (${removed.name}).`);
     return;
   }
 }
@@ -1008,6 +1009,33 @@ async function handleAccessModalSubmit(interaction) {
     ephemeral: false,
     allowedMentions: { parse: [] },
   });
+
+  const scheduleDesc = describeSchedule(saved);
+  const verb = mode === "add" ? "added a new door access rule" : "updated the door access rules";
+  sendDiscordMessage(`<@${interaction.user.id}> ${verb}: <@&${roleId}> can now open the door ${scheduleDesc}.`);
+}
+
+function describeSchedule(role) {
+  const parts = [];
+  if (role.daysOfWeek === "anytime") {
+    parts.push("every day");
+  } else {
+    parts.push(`on ${role.daysOfWeek.join(", ")}`);
+  }
+  if (role.timeRange === "anytime") {
+    parts.push("at any time");
+  } else {
+    const [start, end] = role.timeRange.split("-");
+    parts.push(`between ${start}:00 and ${end}:00`);
+  }
+  if (role.dateRange) {
+    if (role.dateRange.end) {
+      parts.push(`from ${role.dateRange.start} to ${role.dateRange.end}`);
+    } else {
+      parts.push(`starting ${role.dateRange.start}`);
+    }
+  }
+  return parts.join(" ");
 }
 
 client.on("interactionCreate", async (interaction) => {
