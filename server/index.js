@@ -12,6 +12,13 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { loginWithCitizenWallet } from "./lib/citizenwallet/index.js";
 import { sendDiscordMessage, getMembers, removeRole } from "./lib/discord.js";
@@ -670,41 +677,13 @@ async function registerCommands() {
       sub
         .setName("add")
         .setDescription("Add a new access role")
-        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role").setRequired(true))
-        .addStringOption((opt) => opt.setName("name").setDescription("Display name for the role").setRequired(true))
-        .addStringOption((opt) => opt.setName("description").setDescription("Description of the access rule").setRequired(true))
-        .addStringOption((opt) =>
-          opt.setName("days").setDescription("Days of week (anytime, or comma-separated: Monday,Tuesday,...)").setRequired(true),
-        )
-        .addStringOption((opt) =>
-          opt.setName("time").setDescription("Time range (anytime, or e.g. 18-23)").setRequired(true),
-        )
-        .addStringOption((opt) =>
-          opt.setName("date_start").setDescription("Optional date range start (YYYY-MM-DD)").setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt.setName("date_end").setDescription("Optional date range end (YYYY-MM-DD)").setRequired(false),
-        ),
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role").setRequired(true)),
     )
     .addSubcommand((sub) =>
       sub
         .setName("edit")
         .setDescription("Edit an existing access role")
-        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to edit").setRequired(true))
-        .addStringOption((opt) => opt.setName("name").setDescription("New display name").setRequired(false))
-        .addStringOption((opt) => opt.setName("description").setDescription("New description").setRequired(false))
-        .addStringOption((opt) =>
-          opt.setName("days").setDescription("Days of week (anytime, or comma-separated: Monday,Tuesday,...)").setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt.setName("time").setDescription("Time range (anytime, or e.g. 18-23)").setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt.setName("date_start").setDescription("Date range start (YYYY-MM-DD, use 'none' to remove)").setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt.setName("date_end").setDescription("Date range end (YYYY-MM-DD, use 'none' to remove)").setRequired(false),
-        ),
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to edit").setRequired(true)),
     )
     .addSubcommand((sub) =>
       sub
@@ -756,21 +735,6 @@ client.once("ready", async () => {
 
 const VALID_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-function parseDaysOption(value) {
-  if (value.toLowerCase() === "anytime") return "anytime";
-  const days = value.split(",").map((d) => d.trim());
-  for (const day of days) {
-    if (!VALID_DAYS.includes(day)) return { error: `Invalid day: ${day}. Use: ${VALID_DAYS.join(", ")}` };
-  }
-  return days;
-}
-
-function parseTimeOption(value) {
-  if (value.toLowerCase() === "anytime") return "anytime";
-  if (!/^\d{1,2}-\d{1,2}$/.test(value)) return { error: "Time range must be 'anytime' or e.g. '18-23'" };
-  return value;
-}
-
 function formatRoleForDisplay(role) {
   let schedule = "";
   if (role.dateRange) {
@@ -795,6 +759,92 @@ async function memberHasAdminRole(interaction) {
   return false;
 }
 
+const pendingAccessEdits = new Map();
+
+function buildDaySelectRow(customId, defaults) {
+  const defaultValues = defaults === "anytime" ? VALID_DAYS : (Array.isArray(defaults) ? defaults : []);
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder("Select days of the week")
+      .setMinValues(1)
+      .setMaxValues(7)
+      .addOptions(
+        VALID_DAYS.map((day) => ({
+          label: day,
+          value: day,
+          default: defaultValues.includes(day),
+        })),
+      ),
+  );
+}
+
+function buildContinueRow(customId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel("Continue")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function buildAccessModal(mode, roleId, existing) {
+  const today = getLocalDateString();
+  const modal = new ModalBuilder()
+    .setCustomId(`access_modal:${mode}:${roleId}`)
+    .setTitle(mode === "add" ? "New Access Role" : "Edit Access Role");
+
+  const nameInput = new TextInputBuilder()
+    .setCustomId("name")
+    .setLabel("Display name")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("e.g. Member, Visitor, Coworker");
+  if (existing?.name) nameInput.setValue(existing.name);
+
+  const descInput = new TextInputBuilder()
+    .setCustomId("description")
+    .setLabel("Description")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("e.g. Members can open the door anytime");
+  if (existing?.description) descInput.setValue(existing.description);
+
+  const timeInput = new TextInputBuilder()
+    .setCustomId("time_range")
+    .setLabel("Time range (e.g. 9-18 or anytime)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("anytime");
+  timeInput.setValue(existing?.timeRange || "anytime");
+
+  const startInput = new TextInputBuilder()
+    .setCustomId("date_start")
+    .setLabel("Start date (YYYY-MM-DD, empty = now)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder(today);
+  if (existing?.dateRange?.start) startInput.setValue(existing.dateRange.start);
+
+  const endInput = new TextInputBuilder()
+    .setCustomId("date_end")
+    .setLabel("End date (YYYY-MM-DD, empty = no end)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder("No end date");
+  if (existing?.dateRange?.end) endInput.setValue(existing.dateRange.end);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(nameInput),
+    new ActionRowBuilder().addComponents(descInput),
+    new ActionRowBuilder().addComponents(timeInput),
+    new ActionRowBuilder().addComponents(startInput),
+    new ActionRowBuilder().addComponents(endInput),
+  );
+
+  return modal;
+}
+
 async function handleAccessInteraction(interaction) {
   const subcommand = interaction.options.getSubcommand();
 
@@ -807,6 +857,7 @@ async function handleAccessInteraction(interaction) {
     await interaction.reply({
       content: `**Door Access Settings**\n\n${lines.join("\n\n")}`,
       ephemeral: false,
+      allowedMentions: { parse: [] },
     });
     return;
   }
@@ -818,34 +869,21 @@ async function handleAccessInteraction(interaction) {
 
   if (subcommand === "add") {
     const role = interaction.options.getRole("role");
-    const name = interaction.options.getString("name");
-    const description = interaction.options.getString("description");
-    const daysRaw = interaction.options.getString("days");
-    const timeRaw = interaction.options.getString("time");
-    const dateStart = interaction.options.getString("date_start");
-    const dateEnd = interaction.options.getString("date_end");
-
     if (accessRoles.some((r) => r.roleId === role.id)) {
-      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/access edit\` instead.`, ephemeral: true });
+      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/access edit\` instead.`, ephemeral: true, allowedMentions: { parse: [] } });
       return;
     }
-
-    const days = parseDaysOption(daysRaw);
-    if (days.error) { await interaction.reply({ content: days.error, ephemeral: true }); return; }
-
-    const time = parseTimeOption(timeRaw);
-    if (time.error) { await interaction.reply({ content: time.error, ephemeral: true }); return; }
-
-    const newRole = { name, roleId: role.id, description, daysOfWeek: days, timeRange: time };
-    if (dateStart && dateEnd) {
-      newRole.dateRange = { start: dateStart, end: dateEnd };
-    }
-
-    accessRoles.push(newRole);
-    saveAccessRoles();
-    await reloadAccessRoles();
-
-    await interaction.reply({ content: `Added access role:\n${formatRoleForDisplay(newRole)}`, ephemeral: false });
+    const key = `${interaction.user.id}:${role.id}`;
+    pendingAccessEdits.set(key, { mode: "add", roleId: role.id, days: VALID_DAYS });
+    await interaction.reply({
+      content: `**Adding access for** <@&${role.id}>\n\nSelect which days this role can open the door:`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+      components: [
+        buildDaySelectRow(`access_days:${key}`),
+        buildContinueRow(`access_continue:${key}`),
+      ],
+    });
     return;
   }
 
@@ -853,39 +891,21 @@ async function handleAccessInteraction(interaction) {
     const role = interaction.options.getRole("role");
     const existing = accessRoles.find((r) => r.roleId === role.id);
     if (!existing) {
-      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true });
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true, allowedMentions: { parse: [] } });
       return;
     }
-
-    const name = interaction.options.getString("name");
-    const description = interaction.options.getString("description");
-    const daysRaw = interaction.options.getString("days");
-    const timeRaw = interaction.options.getString("time");
-    const dateStart = interaction.options.getString("date_start");
-    const dateEnd = interaction.options.getString("date_end");
-
-    if (name) existing.name = name;
-    if (description) existing.description = description;
-    if (daysRaw) {
-      const days = parseDaysOption(daysRaw);
-      if (days.error) { await interaction.reply({ content: days.error, ephemeral: true }); return; }
-      existing.daysOfWeek = days;
-    }
-    if (timeRaw) {
-      const time = parseTimeOption(timeRaw);
-      if (time.error) { await interaction.reply({ content: time.error, ephemeral: true }); return; }
-      existing.timeRange = time;
-    }
-    if (dateStart && dateEnd) {
-      existing.dateRange = { start: dateStart, end: dateEnd };
-    } else if (dateStart === "none" || dateEnd === "none") {
-      delete existing.dateRange;
-    }
-
-    saveAccessRoles();
-    await reloadAccessRoles();
-
-    await interaction.reply({ content: `Updated access role:\n${formatRoleForDisplay(existing)}`, ephemeral: false });
+    const key = `${interaction.user.id}:${role.id}`;
+    const defaultDays = existing.daysOfWeek === "anytime" ? VALID_DAYS : existing.daysOfWeek;
+    pendingAccessEdits.set(key, { mode: "edit", roleId: role.id, days: defaultDays, existing });
+    await interaction.reply({
+      content: `**Editing access for** <@&${role.id}> (${existing.name})\n\nSelect which days this role can open the door:`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+      components: [
+        buildDaySelectRow(`access_days:${key}`, existing.daysOfWeek),
+        buildContinueRow(`access_continue:${key}`),
+      ],
+    });
     return;
   }
 
@@ -893,19 +913,132 @@ async function handleAccessInteraction(interaction) {
     const role = interaction.options.getRole("role");
     const idx = accessRoles.findIndex((r) => r.roleId === role.id);
     if (idx === -1) {
-      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true });
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true, allowedMentions: { parse: [] } });
       return;
     }
     const removed = accessRoles.splice(idx, 1)[0];
     saveAccessRoles();
     await reloadAccessRoles();
-
-    await interaction.reply({ content: `Removed access role: **${removed.name}** (<@&${removed.roleId}>)`, ephemeral: false });
+    await interaction.reply({ content: `Removed access role: **${removed.name}** (<@&${removed.roleId}>)`, ephemeral: false, allowedMentions: { parse: [] } });
     return;
   }
 }
 
+async function handleAccessComponent(interaction) {
+  const [action, ...keyParts] = interaction.customId.split(":");
+  const key = keyParts.join(":");
+  const pending = pendingAccessEdits.get(key);
+
+  if (!pending) {
+    await interaction.reply({ content: "This form has expired. Please run the command again.", ephemeral: true });
+    return;
+  }
+
+  if (action === "access_days") {
+    pending.days = interaction.values;
+    await interaction.deferUpdate();
+    return;
+  }
+
+  if (action === "access_continue") {
+    const modal = buildAccessModal(pending.mode, pending.roleId, pending.existing);
+    await interaction.showModal(modal);
+    return;
+  }
+}
+
+async function handleAccessModalSubmit(interaction) {
+  const [, mode, roleId] = interaction.customId.split(":");
+  const key = `${interaction.user.id}:${roleId}`;
+  const pending = pendingAccessEdits.get(key);
+
+  if (!pending) {
+    await interaction.reply({ content: "This form has expired. Please run the command again.", ephemeral: true });
+    return;
+  }
+
+  const name = interaction.fields.getTextInputValue("name");
+  const description = interaction.fields.getTextInputValue("description");
+  const timeRaw = interaction.fields.getTextInputValue("time_range").trim();
+  const dateStart = interaction.fields.getTextInputValue("date_start").trim();
+  const dateEnd = interaction.fields.getTextInputValue("date_end").trim();
+
+  if (timeRaw.toLowerCase() !== "anytime" && !/^\d{1,2}-\d{1,2}$/.test(timeRaw)) {
+    await interaction.reply({ content: "Invalid time range. Use 'anytime' or a range like '9-18'.", ephemeral: true });
+    return;
+  }
+  const timeRange = timeRaw.toLowerCase() === "anytime" ? "anytime" : timeRaw;
+  const daysOfWeek = pending.days.length === 7 ? "anytime" : pending.days;
+
+  if (mode === "add") {
+    const newRole = { name, roleId, description, daysOfWeek, timeRange };
+    if (dateStart && dateEnd) {
+      newRole.dateRange = { start: dateStart, end: dateEnd };
+    } else if (dateStart) {
+      newRole.dateRange = { start: dateStart, end: "" };
+    }
+    accessRoles.push(newRole);
+  } else {
+    const existing = accessRoles.find((r) => r.roleId === roleId);
+    if (!existing) {
+      await interaction.reply({ content: "Role no longer exists.", ephemeral: true });
+      pendingAccessEdits.delete(key);
+      return;
+    }
+    existing.name = name;
+    existing.description = description;
+    existing.daysOfWeek = daysOfWeek;
+    existing.timeRange = timeRange;
+    if (dateStart && dateEnd) {
+      existing.dateRange = { start: dateStart, end: dateEnd };
+    } else if (dateStart) {
+      existing.dateRange = { start: dateStart, end: "" };
+    } else {
+      delete existing.dateRange;
+    }
+  }
+
+  saveAccessRoles();
+  await reloadAccessRoles();
+  pendingAccessEdits.delete(key);
+
+  const saved = accessRoles.find((r) => r.roleId === roleId);
+  await interaction.reply({
+    content: `${mode === "add" ? "Added" : "Updated"} access role:\n${formatRoleForDisplay(saved)}`,
+    ephemeral: false,
+    allowedMentions: { parse: [] },
+  });
+}
+
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isStringSelectMenu() || interaction.isButton()) {
+    if (interaction.customId.startsWith("access_")) {
+      try {
+        await handleAccessComponent(interaction);
+      } catch (error) {
+        console.error("Error handling access component:", error);
+      }
+      return;
+    }
+  }
+
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith("access_modal:")) {
+      try {
+        await handleAccessModalSubmit(interaction);
+      } catch (error) {
+        console.error("Error handling access modal:", error);
+        const reply = { content: "Something went wrong.", ephemeral: true };
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp(reply);
+        } else {
+          await interaction.reply(reply);
+        }
+      }
+      return;
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "open") {
