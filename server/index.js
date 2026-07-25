@@ -12,6 +12,13 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { loginWithCitizenWallet } from "./lib/citizenwallet/index.js";
 import { sendDiscordMessage, getMembers, removeRole } from "./lib/discord.js";
@@ -96,8 +103,15 @@ console.log(
 
 const rest = new REST({ version: "10" }).setToken(token);
 
-const accessRoles = loadJSON("./access_roles.json");
+const ACCESS_ROLES_PATH = path.join(__dirname, "access_roles.json");
+const accessRoles = JSON.parse(fs.readFileSync(ACCESS_ROLES_PATH, "utf8"));
 const authorizedKeys = loadJSON("./authorized_keys.json");
+
+const SETTINGS_ADMIN_ROLE_ID = "1509246685199470672";
+
+function saveAccessRoles() {
+  fs.writeFileSync(ACCESS_ROLES_PATH, JSON.stringify(accessRoles, null, 2) + "\n", "utf8");
+}
 
 const userIdToRoles = {};
 
@@ -653,11 +667,45 @@ loginToDiscord();
 
 // Add this function to register the commands
 async function registerCommands() {
+  const accessCommand = new SlashCommandBuilder()
+    .setName("access")
+    .setDescription("Manage door access roles and schedules")
+    .addSubcommand((sub) =>
+      sub.setName("list").setDescription("Show all access roles and their schedules"),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("add")
+        .setDescription("Add a new access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role").setRequired(true)),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("edit")
+        .setDescription("Edit an existing access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to edit").setRequired(true)),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove")
+        .setDescription("Remove an access role")
+        .addRoleOption((opt) => opt.setName("role").setDescription("Discord role to remove").setRequired(true)),
+    );
+
   const commands = [
     new SlashCommandBuilder()
       .setName("open")
       .setDescription("Opens the door")
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("present")
+      .setDescription("Show who opened the door today")
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("status")
+      .setDescription("Show door system health and hardware status")
+      .toJSON(),
+    accessCommand.toJSON(),
   ];
 
   try {
@@ -683,6 +731,453 @@ client.once("ready", async () => {
   await registerCommands();
   await loadGuild();
   await loadFunFacts();
+});
+
+const VALID_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function formatRoleForDisplay(role) {
+  let schedule = "";
+  if (role.dateRange) {
+    schedule += `${role.dateRange.start} to ${role.dateRange.end}, `;
+  }
+  if (role.daysOfWeek === "anytime") {
+    schedule += "any day";
+  } else {
+    schedule += role.daysOfWeek.join(", ");
+  }
+  schedule += ", ";
+  schedule += role.timeRange === "anytime" ? "any time" : `${role.timeRange}h`;
+  return `**${role.name}** (<@&${role.roleId}>)\n${role.description}\nSchedule: ${schedule}`;
+}
+
+async function memberHasAdminRole(interaction) {
+  const member = interaction.member;
+  if (!member) return false;
+  const roles = member.roles;
+  if (Array.isArray(roles)) return roles.includes(SETTINGS_ADMIN_ROLE_ID);
+  if (roles?.cache) return roles.cache.has(SETTINGS_ADMIN_ROLE_ID);
+  return false;
+}
+
+const pendingAccessEdits = new Map();
+
+function buildDaySelectRow(customId, defaults) {
+  const defaultValues = defaults === "anytime" ? VALID_DAYS : (Array.isArray(defaults) ? defaults : []);
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder("Select days of the week")
+      .setMinValues(1)
+      .setMaxValues(7)
+      .addOptions(
+        VALID_DAYS.map((day) => ({
+          label: day,
+          value: day,
+          default: defaultValues.includes(day),
+        })),
+      ),
+  );
+}
+
+function buildContinueRow(customId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel("Continue")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function buildAccessModal(mode, roleId, existing) {
+  const today = getLocalDateString();
+  const modal = new ModalBuilder()
+    .setCustomId(`access_modal:${mode}:${roleId}`)
+    .setTitle(mode === "add" ? "New Access Role" : "Edit Access Role");
+
+  const nameInput = new TextInputBuilder()
+    .setCustomId("name")
+    .setLabel("Display name")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("e.g. Member, Visitor, Coworker");
+  if (existing?.name) nameInput.setValue(existing.name);
+
+  const descInput = new TextInputBuilder()
+    .setCustomId("description")
+    .setLabel("Description")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("e.g. Members can open the door anytime");
+  if (existing?.description) descInput.setValue(existing.description);
+
+  const timeInput = new TextInputBuilder()
+    .setCustomId("time_range")
+    .setLabel("Time range (e.g. 9-18 or anytime)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("anytime");
+  timeInput.setValue(existing?.timeRange || "anytime");
+
+  const startInput = new TextInputBuilder()
+    .setCustomId("date_start")
+    .setLabel("Start date (YYYY-MM-DD, empty = now)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder(today);
+  if (existing?.dateRange?.start) startInput.setValue(existing.dateRange.start);
+
+  const endInput = new TextInputBuilder()
+    .setCustomId("date_end")
+    .setLabel("End date (YYYY-MM-DD, empty = no end)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder("No end date");
+  if (existing?.dateRange?.end) endInput.setValue(existing.dateRange.end);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(nameInput),
+    new ActionRowBuilder().addComponents(descInput),
+    new ActionRowBuilder().addComponents(timeInput),
+    new ActionRowBuilder().addComponents(startInput),
+    new ActionRowBuilder().addComponents(endInput),
+  );
+
+  return modal;
+}
+
+async function handleAccessInteraction(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "list") {
+    if (accessRoles.length === 0) {
+      await interaction.reply({ content: "No access roles configured.", ephemeral: true });
+      return;
+    }
+    const lines = accessRoles.map((r, i) => `${i + 1}. ${formatRoleForDisplay(r)}`);
+    await interaction.reply({
+      content: `**Door Access Settings**\n\n${lines.join("\n\n")}`,
+      ephemeral: false,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (!await memberHasAdminRole(interaction)) {
+    await interaction.reply({ content: "You don't have permission to change settings.", ephemeral: true });
+    return;
+  }
+
+  if (subcommand === "add") {
+    const role = interaction.options.getRole("role");
+    if (accessRoles.some((r) => r.roleId === role.id)) {
+      await interaction.reply({ content: `Role <@&${role.id}> is already configured. Use \`/access edit\` instead.`, ephemeral: true, allowedMentions: { parse: [] } });
+      return;
+    }
+    const key = `${interaction.user.id}:${role.id}`;
+    pendingAccessEdits.set(key, { mode: "add", roleId: role.id, days: VALID_DAYS });
+    await interaction.reply({
+      content: `**Adding access for** <@&${role.id}>\n\nSelect which days this role can open the door:`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+      components: [
+        buildDaySelectRow(`access_days:${key}`),
+        buildContinueRow(`access_continue:${key}`),
+      ],
+    });
+    return;
+  }
+
+  if (subcommand === "edit") {
+    const role = interaction.options.getRole("role");
+    const existing = accessRoles.find((r) => r.roleId === role.id);
+    if (!existing) {
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true, allowedMentions: { parse: [] } });
+      return;
+    }
+    const key = `${interaction.user.id}:${role.id}`;
+    const defaultDays = existing.daysOfWeek === "anytime" ? VALID_DAYS : existing.daysOfWeek;
+    pendingAccessEdits.set(key, { mode: "edit", roleId: role.id, days: defaultDays, existing });
+    await interaction.reply({
+      content: `**Editing access for** <@&${role.id}> (${existing.name})\n\nSelect which days this role can open the door:`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+      components: [
+        buildDaySelectRow(`access_days:${key}`, existing.daysOfWeek),
+        buildContinueRow(`access_continue:${key}`),
+      ],
+    });
+    return;
+  }
+
+  if (subcommand === "remove") {
+    const role = interaction.options.getRole("role");
+    const idx = accessRoles.findIndex((r) => r.roleId === role.id);
+    if (idx === -1) {
+      await interaction.reply({ content: `Role <@&${role.id}> is not configured.`, ephemeral: true, allowedMentions: { parse: [] } });
+      return;
+    }
+    const removed = accessRoles.splice(idx, 1)[0];
+    saveAccessRoles();
+    await reloadAccessRoles();
+    await interaction.reply({ content: `Removed access role: **${removed.name}** (<@&${removed.roleId}>)`, ephemeral: false, allowedMentions: { parse: [] } });
+    sendDiscordMessage(`<@${interaction.user.id}> removed door access for <@&${removed.roleId}> (${removed.name}).`);
+    return;
+  }
+}
+
+async function handleAccessComponent(interaction) {
+  const [action, ...keyParts] = interaction.customId.split(":");
+  const key = keyParts.join(":");
+  const pending = pendingAccessEdits.get(key);
+
+  if (!pending) {
+    await interaction.reply({ content: "This form has expired. Please run the command again.", ephemeral: true });
+    return;
+  }
+
+  if (action === "access_days") {
+    pending.days = interaction.values;
+    await interaction.deferUpdate();
+    return;
+  }
+
+  if (action === "access_continue") {
+    const modal = buildAccessModal(pending.mode, pending.roleId, pending.existing);
+    await interaction.showModal(modal);
+    return;
+  }
+}
+
+async function handleAccessModalSubmit(interaction) {
+  const [, mode, roleId] = interaction.customId.split(":");
+  const key = `${interaction.user.id}:${roleId}`;
+  const pending = pendingAccessEdits.get(key);
+
+  if (!pending) {
+    await interaction.reply({ content: "This form has expired. Please run the command again.", ephemeral: true });
+    return;
+  }
+
+  const name = interaction.fields.getTextInputValue("name");
+  const description = interaction.fields.getTextInputValue("description");
+  const timeRaw = interaction.fields.getTextInputValue("time_range").trim();
+  const dateStart = interaction.fields.getTextInputValue("date_start").trim();
+  const dateEnd = interaction.fields.getTextInputValue("date_end").trim();
+
+  if (timeRaw.toLowerCase() !== "anytime" && !/^\d{1,2}-\d{1,2}$/.test(timeRaw)) {
+    await interaction.reply({ content: "Invalid time range. Use 'anytime' or a range like '9-18'.", ephemeral: true });
+    return;
+  }
+  const timeRange = timeRaw.toLowerCase() === "anytime" ? "anytime" : timeRaw;
+  const daysOfWeek = pending.days.length === 7 ? "anytime" : pending.days;
+
+  if (mode === "add") {
+    const newRole = { name, roleId, description, daysOfWeek, timeRange };
+    if (dateStart && dateEnd) {
+      newRole.dateRange = { start: dateStart, end: dateEnd };
+    } else if (dateStart) {
+      newRole.dateRange = { start: dateStart, end: "" };
+    }
+    accessRoles.push(newRole);
+  } else {
+    const existing = accessRoles.find((r) => r.roleId === roleId);
+    if (!existing) {
+      await interaction.reply({ content: "Role no longer exists.", ephemeral: true });
+      pendingAccessEdits.delete(key);
+      return;
+    }
+    existing.name = name;
+    existing.description = description;
+    existing.daysOfWeek = daysOfWeek;
+    existing.timeRange = timeRange;
+    if (dateStart && dateEnd) {
+      existing.dateRange = { start: dateStart, end: dateEnd };
+    } else if (dateStart) {
+      existing.dateRange = { start: dateStart, end: "" };
+    } else {
+      delete existing.dateRange;
+    }
+  }
+
+  saveAccessRoles();
+  await reloadAccessRoles();
+  pendingAccessEdits.delete(key);
+
+  const saved = accessRoles.find((r) => r.roleId === roleId);
+  await interaction.reply({
+    content: `${mode === "add" ? "Added" : "Updated"} access role:\n${formatRoleForDisplay(saved)}`,
+    ephemeral: false,
+    allowedMentions: { parse: [] },
+  });
+
+  const scheduleDesc = describeSchedule(saved);
+  const verb = mode === "add" ? "added a new door access rule" : "updated the door access rules";
+  sendDiscordMessage(`<@${interaction.user.id}> ${verb}: <@&${roleId}> can now open the door ${scheduleDesc}.`);
+}
+
+function describeSchedule(role) {
+  const parts = [];
+  if (role.daysOfWeek === "anytime") {
+    parts.push("every day");
+  } else {
+    parts.push(`on ${role.daysOfWeek.join(", ")}`);
+  }
+  if (role.timeRange === "anytime") {
+    parts.push("at any time");
+  } else {
+    const [start, end] = role.timeRange.split("-");
+    parts.push(`between ${start}:00 and ${end}:00`);
+  }
+  if (role.dateRange) {
+    if (role.dateRange.end) {
+      parts.push(`from ${role.dateRange.start} to ${role.dateRange.end}`);
+    } else {
+      parts.push(`starting ${role.dateRange.start}`);
+    }
+  }
+  return parts.join(" ");
+}
+
+client.on("interactionCreate", async (interaction) => {
+  if (interaction.isStringSelectMenu() || interaction.isButton()) {
+    if (interaction.customId.startsWith("access_")) {
+      try {
+        await handleAccessComponent(interaction);
+      } catch (error) {
+        console.error("Error handling access component:", error);
+      }
+      return;
+    }
+  }
+
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith("access_modal:")) {
+      try {
+        await handleAccessModalSubmit(interaction);
+      } catch (error) {
+        console.error("Error handling access modal:", error);
+        const reply = { content: "Something went wrong.", ephemeral: true };
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp(reply);
+        } else {
+          await interaction.reply(reply);
+        }
+      }
+      return;
+    }
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === "open") {
+    try {
+      if (hasAccess(interaction.user.id)) {
+        await addUser(interaction.user, interaction.guildId);
+        const roles = userIdToRoles[interaction.user.id];
+        const firstRole = accessRoles.find((r) => r.roleId === roles?.[0]);
+        logDoorAccess(interaction.user.displayName || interaction.user.username, "discord-slash", {
+          userId: interaction.user.id,
+          username: interaction.user.username,
+          role: firstRole?.name,
+        });
+        openDoor(interaction.user.id, client.user.tag);
+        await interaction.reply({ content: `Door opened! ${firstRole?.description || ""}`, ephemeral: true });
+      } else {
+        logDoorError(
+          interaction.user.displayName || interaction.user.username,
+          getNoAccessReason(interaction.user.id),
+          { userId: interaction.user.id, username: interaction.user.username, method: "discord-slash" },
+        );
+        await interaction.reply({ content: "You don't have access at this time.", ephemeral: true });
+      }
+    } catch (error) {
+      console.error("Error handling /open:", error);
+      await interaction.reply({ content: "Something went wrong.", ephemeral: true });
+    }
+    return;
+  }
+
+  if (interaction.commandName === "present") {
+    const todayUserIds = getTodayUsers();
+    const presentTodayRoleId = process.env.DISCORD_PRESENT_TODAY_ROLE_ID;
+
+    if (todayUserIds.length === 0) {
+      await interaction.reply({
+        content: "Nobody has opened the door yet today.",
+        ephemeral: false,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const names = todayUserIds.map((id) => {
+      const user = users[id];
+      return user ? user.displayName : `<@${id}>`;
+    });
+
+    const roleHint = presentTodayRoleId
+      ? `\n\nTo ping everyone present today, mention <@&${presentTodayRoleId}>.`
+      : "";
+
+    await interaction.reply({
+      content: `**Present today** (${names.length})\n${names.join(", ")}${roleHint}`,
+      ephemeral: false,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (interaction.commandName === "status") {
+    const clients = Object.keys(status_log);
+    const uptime = process.uptime();
+    const uptimeParts = [];
+    const days = Math.floor(uptime / 86400);
+    const hours = Math.floor((uptime % 86400) / 3600);
+    const mins = Math.floor((uptime % 3600) / 60);
+    if (days) uptimeParts.push(`${days}d`);
+    if (hours) uptimeParts.push(`${hours}h`);
+    uptimeParts.push(`${mins}m`);
+
+    let hardwareStatus = "No hardware has connected yet.";
+    if (clients.length > 0) {
+      const lines = [];
+      for (const ip of clients) {
+        const entries = status_log[ip];
+        if (!entries || entries.length === 0) continue;
+        const last = entries[entries.length - 1];
+        const lastTime = new Date(last.timestamp);
+        const elapsed = Date.now() - lastTime.getTime();
+        const timeStr = lastTime.toLocaleString("en-GB", { timeZone: "Europe/Brussels" });
+        const ua = last.userAgent || "unknown";
+        const isEsp = /micropython|esp/i.test(ua);
+        const label = isEsp ? `ESP32 (${ip})` : `Unknown client (${ip})`;
+        const online = elapsed < 10000;
+        lines.push(`${online ? "🟢" : "🔴"} **${label}** — ${online ? "Online" : `Offline since ${timeStr}`} · ${entries.length} checks today`);
+      }
+      hardwareStatus = lines.join("\n");
+    }
+
+    await interaction.reply({
+      content: `**Door System Status**\n\nServer uptime: ${uptimeParts.join(" ")}\nVersion: ${gitInfo.hash} — ${gitInfo.message}\nAccess roles loaded: ${accessRoles.length}\nLast role reload: ${lastReloadAt ? lastReloadAt.toLocaleString("en-GB", { timeZone: "Europe/Brussels" }) : "never"}\n\n**Hardware**\n${hardwareStatus}`,
+      ephemeral: false,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "access") {
+    try {
+      await handleAccessInteraction(interaction);
+    } catch (error) {
+      console.error("Error handling /access:", error);
+      const reply = { content: "Something went wrong.", ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(reply);
+      } else {
+        await interaction.reply(reply);
+      }
+    }
+    return;
+  }
 });
 
 async function handleMessage(message) {

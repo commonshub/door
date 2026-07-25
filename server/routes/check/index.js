@@ -7,13 +7,16 @@ export default function registerCheckRoute(app, dependencies) {
 
   app.get("/check", (req, res) => {
     const ip = req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-    status_log[ip] = status_log[ip] || [];
+    if (!status_log[ip]) status_log[ip] = [];
     status_log[ip].push({
       timestamp: new Date().toISOString(),
       ip,
       userAgent: req.headers["user-agent"],
       isDoorOpen: isDoorOpen(),
     });
+    if (status_log[ip].length > 1000) {
+      status_log[ip] = status_log[ip].slice(-500);
+    }
 
     if (isDoorOpen()) {
       res.status(200).send("open");
