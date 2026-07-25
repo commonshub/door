@@ -788,7 +788,7 @@ function buildContinueRow(customId) {
   );
 }
 
-function buildAccessModal(mode, roleId, existing) {
+function buildAccessModal(mode, roleId, existing, roleName) {
   const today = getLocalDateString();
   const modal = new ModalBuilder()
     .setCustomId(`access_modal:${mode}:${roleId}`)
@@ -800,7 +800,8 @@ function buildAccessModal(mode, roleId, existing) {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder("e.g. Member, Visitor, Coworker");
-  if (existing?.name) nameInput.setValue(existing.name);
+  const defaultName = existing?.name || roleName;
+  if (defaultName) nameInput.setValue(defaultName);
 
   const descInput = new TextInputBuilder()
     .setCustomId("description")
@@ -874,13 +875,13 @@ async function handleAccessInteraction(interaction) {
       return;
     }
     const key = `${interaction.user.id}:${role.id}`;
-    pendingAccessEdits.set(key, { mode: "add", roleId: role.id, days: VALID_DAYS });
+    pendingAccessEdits.set(key, { mode: "add", roleId: role.id, roleName: role.name, days: VALID_DAYS });
     await interaction.reply({
       content: `**Adding access for** <@&${role.id}>\n\nSelect which days this role can open the door:`,
       ephemeral: true,
       allowedMentions: { parse: [] },
       components: [
-        buildDaySelectRow(`access_days:${key}`),
+        buildDaySelectRow(`access_days:${key}`, "anytime"),
         buildContinueRow(`access_continue:${key}`),
       ],
     });
@@ -942,7 +943,7 @@ async function handleAccessComponent(interaction) {
   }
 
   if (action === "access_continue") {
-    const modal = buildAccessModal(pending.mode, pending.roleId, pending.existing);
+    const modal = buildAccessModal(pending.mode, pending.roleId, pending.existing, pending.roleName);
     await interaction.showModal(modal);
     return;
   }
