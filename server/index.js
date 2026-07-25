@@ -722,6 +722,10 @@ async function registerCommands() {
       .setName("present")
       .setDescription("Show who opened the door today")
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("status")
+      .setDescription("Show door system health and hardware status")
+      .toJSON(),
     accessCommand.toJSON(),
   ];
 
@@ -958,6 +962,43 @@ client.on("interactionCreate", async (interaction) => {
       content: `**Present today** (${names.length})\n${names.join(", ")}${roleHint}`,
       ephemeral: false,
       allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (interaction.commandName === "status") {
+    const clients = Object.keys(status_log);
+    const uptime = process.uptime();
+    const uptimeParts = [];
+    const days = Math.floor(uptime / 86400);
+    const hours = Math.floor((uptime % 86400) / 3600);
+    const mins = Math.floor((uptime % 3600) / 60);
+    if (days) uptimeParts.push(`${days}d`);
+    if (hours) uptimeParts.push(`${hours}h`);
+    uptimeParts.push(`${mins}m`);
+
+    let hardwareStatus = "No hardware has connected yet.";
+    if (clients.length > 0) {
+      const lines = [];
+      for (const ip of clients) {
+        const entries = status_log[ip];
+        if (!entries || entries.length === 0) continue;
+        const last = entries[entries.length - 1];
+        const lastTime = new Date(last.timestamp);
+        const elapsed = Date.now() - lastTime.getTime();
+        const timeStr = lastTime.toLocaleString("en-GB", { timeZone: "Europe/Brussels" });
+        const ua = last.userAgent || "unknown";
+        const isEsp = /micropython|esp/i.test(ua);
+        const label = isEsp ? `ESP32 (${ip})` : `Unknown client (${ip})`;
+        const online = elapsed < 10000;
+        lines.push(`${online ? "🟢" : "🔴"} **${label}** — ${online ? "Online" : `Offline since ${timeStr}`} · ${entries.length} checks today`);
+      }
+      hardwareStatus = lines.join("\n");
+    }
+
+    await interaction.reply({
+      content: `**Door System Status**\n\nServer uptime: ${uptimeParts.join(" ")}\nVersion: ${gitInfo.hash} — ${gitInfo.message}\nAccess roles loaded: ${accessRoles.length}\nLast role reload: ${lastReloadAt ? lastReloadAt.toLocaleString("en-GB", { timeZone: "Europe/Brussels" }) : "never"}\n\n**Hardware**\n${hardwareStatus}`,
+      ephemeral: false,
     });
     return;
   }
