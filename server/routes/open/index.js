@@ -3,6 +3,7 @@
  * Handles door access via signature, CitizenWallet, token, or shortcut
  */
 import crypto from "crypto";
+import { openedMessage } from "../../lib/signed-link.js";
 import { generateSignatureSuccessPage } from "./signature-success.html.js";
 import { generateSignatureErrorPage } from "./signature-error.html.js";
 import { generateCitizenWalletSuccessPage } from "./citizenwallet-success.html.js";
@@ -72,13 +73,8 @@ export default function registerOpenRoutes(app, dependencies) {
         secretBypass: verification.secretBypass || false,
       });
 
-      // Send message to Discord channel with event name linked to Luma (suppress embed)
-      const eventLink = req.query.eventUrl
-        ? `[${req.query.reason}](<${req.query.eventUrl}>)`
-        : req.query.reason;
-      await sendDiscordMessage(
-        `🚪 ${req.query.name} opened the door for ${eventLink} hosted by ${req.query.host}`,
-      );
+      // Tell the door channel: Luma events link to the event; room bookings name who booked
+      await sendDiscordMessage(openedMessage(req.query));
 
       // Generate welcome page with redirect
       const html = generateSignatureSuccessPage({

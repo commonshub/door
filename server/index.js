@@ -32,6 +32,7 @@ import { verifyMessage, Wallet } from "ethers";
 import fs from "fs";
 import { execSync } from "child_process";
 import { createRequire } from 'module';
+import { signedMessage } from "./lib/signed-link.js";
 
 const require = createRequire(import.meta.url);
 
@@ -1430,10 +1431,8 @@ function verifyEventOrganizerSignature(params) {
     }
   }
 
-  // Construct the message that was signed (include eventUrl if present)
-  const message = eventUrl
-    ? `name=${name}&host=${host}&reason=${reason}&timestamp=${timestamp}&startTime=${startTime}&duration=${duration}&eventUrl=${eventUrl}`
-    : `name=${name}&host=${host}&reason=${reason}&timestamp=${timestamp}&startTime=${startTime}&duration=${duration}`;
+  // Construct the message that was signed (eventUrl and booking=1 only when present)
+  const message = signedMessage(params);
 
   try {
     // Recover the public key from the signature
