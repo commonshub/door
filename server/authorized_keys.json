@@ -13,5 +13,10 @@
     "name": "app.opensourcevillage.org",
     "publicKey": "0xf77Bb6d61eb56B241DE4B90B449ecD31529Fe753",
     "description": "Allow Open Source Village participants to open the door"
+  },
+  {
+    "name": "token-bot /book guests",
+    "publicKey": "0xaEC7078c4D6C08fC116b947F3Ff19e160337Ec2F",
+    "description": "Discord /book (opencollective/token-bot): door links in the confirmation email of rooms booked by a member for a guest. Valid 30 min before to 30 min after each booking. Key: DOOR_SIGNING_KEY in the token-bot's Coolify app."
   }
 ]
